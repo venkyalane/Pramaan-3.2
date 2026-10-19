@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, message=r"(?s).*google\.generativeai.*")
 import google.generativeai as genai
 from google.generativeai import caching
 import datetime

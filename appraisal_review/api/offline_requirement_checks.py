@@ -2,7 +2,34 @@ import os
 import re
 import base64
 from typing import Optional, Dict, Any
-import fitz  # PyMuPDF
+try:
+    import fitz
+except Exception:
+    try:
+        import pymupdf as fitz
+    except Exception:
+        fitz = None
+
+if fitz is None:
+    class _DummyRect:
+        def __init__(self, *args, **kwargs):
+            if args:
+                self.x0 = args[0] if len(args) > 0 else 0
+                self.y0 = args[1] if len(args) > 1 else 0
+                self.x1 = args[2] if len(args) > 2 else 0
+                self.y1 = args[3] if len(args) > 3 else 0
+            else:
+                self.x0 = self.y0 = self.x1 = self.y1 = 0
+        def intersects(self, *args, **kwargs):
+            return False
+    class _DummyMuPDF:
+        Rect = _DummyRect
+        PDF_WIDGET_TYPE_CHECKBOX = 2
+        def open(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyMuPDF native library (_mupdf.pyd) is blocked by Windows Application Control / Smart App Control."
+            )
+    fitz = _DummyMuPDF()
 
 try:
     from api.pdf_extractor_offline import extract_fields_from_pdf_offline
@@ -67,6 +94,17 @@ def _extract_full_text_with_pages(pdf_path: str):
             pages_text.append({"page_no": idx + 1, "text": text})
     except Exception:
         pass
+
+    if not pages_text:
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            for idx, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                pages_text.append({"page_no": idx + 1, "text": text})
+        except Exception:
+            pass
+
     return pages_text
 
 
@@ -2486,4 +2524,21 @@ def evaluate_photo_requirements(pdf_path: str, extracted_data: Optional[Dict[str
         "total_count": total_count,
         "details": details
     }
+
+
+def evaluate_map_address_verification(pdf_path: str, extracted_data: Optional[Dict[str, Any]] = None) -> dict:
+    """
+    Evaluates and verifies Subject Address and Comparable Addresses & Proximities
+    from the Sales Comparison Section against Location Map and Aerial Map exhibits.
+    """
+    try:
+        from api.map_verification import verify_sales_comparison_to_maps
+    except ImportError:
+        try:
+            from .map_verification import verify_sales_comparison_to_maps
+        except Exception:
+            from map_verification import verify_sales_comparison_to_maps
+
+    return verify_sales_comparison_to_maps(pdf_path, extracted_data=extracted_data)
+
 

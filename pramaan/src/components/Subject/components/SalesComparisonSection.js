@@ -1,7 +1,32 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { EditableField } from './FormComponents';
-import { Tooltip, IconButton, Paper, Box, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import {
+  Tooltip,
+  IconButton,
+  Button,
+  Chip,
+  Paper,
+  Box,
+  Typography,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  Stack,
+  CircularProgress
+} from '@mui/material';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import PinDropIcon from '@mui/icons-material/PinDrop';
+import MapIcon from '@mui/icons-material/Map';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import CancelIcon from '@mui/icons-material/Cancel';
+import CloseIcon from '@mui/icons-material/Close';
 
 
 const SalesComparisonSection = ({
@@ -21,9 +46,46 @@ const SalesComparisonSection = ({
   manualValidations,
   handleManualValidation,
   onRevisionButtonClick,
-  revisionHandlers
+  revisionHandlers,
+  onVerifyMapAddresses,
+  mapVerificationData,
+  mapVerificationLoading = false
 }) => {
   extractionAttempted = false;
+  const [mapModalOpen, setMapModalOpen] = useState(false);
+  const [previewMapImg, setPreviewMapImg] = useState(null);
+
+  // Extract map verification payload from props or root data
+  const mapVerif = mapVerificationData
+    || data?.MAP_VERIFICATION
+    || data?.map_verification
+    || allData?.MAP_VERIFICATION
+    || allData?.map_verification
+    || null;
+
+  const vData = mapVerif?.verification_data || mapVerif || {};
+  const subjVerif = vData?.subject_verification || null;
+  const rawCompsVerif = vData?.comparables_verification || [];
+  const compsVerif = [];
+  const seenCompKeys = new Set();
+  rawCompsVerif.forEach(c => {
+    const key = String(c.comp_num || c.comp_id || '').trim();
+    if (key && !seenCompKeys.has(key)) {
+      seenCompKeys.add(key);
+      compsVerif.push(c);
+    } else if (!key) {
+      compsVerif.push(c);
+    }
+  });
+  const mapsDetected = vData?.maps_detected || [];
+  const overallStatus = String(mapVerif?.overall_status || vData?.overall_status || '').toUpperCase();
+
+  const handleOpenMapModal = () => {
+    setMapModalOpen(true);
+    if (!mapVerif && onVerifyMapAddresses) {
+      onVerifyMapAddresses();
+    }
+  };
 
   const getCompData = (sale) => {
     if (!data || typeof data !== 'object') return {};
@@ -48,16 +110,96 @@ const SalesComparisonSection = ({
 
   const subjectObj = getSubjectData();
 
+  const getStatusBadge = (status) => {
+    const s = String(status || '').trim().toLowerCase();
+    if (['fulfilled', 'ok', 'pass', 'passed', 'yes', 'match'].includes(s)) {
+      return (
+        <Chip
+          size="small"
+          icon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
+          label="MATCH"
+          sx={{ bgcolor: '#e8f5e9', color: '#2e7d32', fontWeight: 600, height: 22, fontSize: '0.75rem' }}
+        />
+      );
+    }
+    if (['mismatch', 'failed', 'not fulfilled', 'fail'].includes(s)) {
+      return (
+        <Chip
+          size="small"
+          icon={<CancelIcon sx={{ fontSize: 14 }} />}
+          label="MISMATCH"
+          sx={{ bgcolor: '#ffebee', color: '#c62828', fontWeight: 600, height: 22, fontSize: '0.75rem' }}
+        />
+      );
+    }
+    if (['partial_match', 'needs review', 'review', 'warning'].includes(s)) {
+      return (
+        <Chip
+          size="small"
+          icon={<WarningAmberIcon sx={{ fontSize: 14 }} />}
+          label="REVIEW"
+          sx={{ bgcolor: '#fff8e1', color: '#f57f17', fontWeight: 600, height: 22, fontSize: '0.75rem' }}
+        />
+      );
+    }
+    return (
+      <Chip
+        size="small"
+        label={status || 'NOT DETECTED'}
+        sx={{ bgcolor: '#f5f5f5', color: '#757575', fontWeight: 500, height: 22, fontSize: '0.75rem' }}
+      />
+    );
+  };
+
   return (
     <>
       <Paper id={id} elevation={3} sx={{ mb: 4, mt: 4, borderRadius: 2, overflow: 'hidden' }}>
-        <Box sx={{ bgcolor: 'primary.main', color: 'white', px: 2, py: 1.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 10 }}>
-          <Typography variant="subtitle1" fontWeight="bold">Sales Comparison Approach</Typography>
-          {onRevisionButtonClick && (
-            <Tooltip title="Revision Language">
-              <IconButton onClick={onRevisionButtonClick} size="small" sx={{ color: 'white', ml: 'auto' }}><LibraryBooksIcon /></IconButton>
+        <Box sx={{ bgcolor: 'primary.main', color: 'white', px: 2, py: 1.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 10, flexWrap: 'wrap', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="subtitle1" fontWeight="bold">Sales Comparison Approach</Typography>
+            {overallStatus && (
+              <Chip
+                size="small"
+                label={`Maps: ${overallStatus}`}
+                sx={{
+                  bgcolor: overallStatus === 'PASS' ? '#2e7d32' : (overallStatus === 'FAIL' ? '#c62828' : '#f57f17'),
+                  color: 'white',
+                  fontWeight: 'bold',
+                  height: 22,
+                  fontSize: '0.72rem'
+                }}
+              />
+            )}
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 'auto' }}>
+            <Tooltip title="Verify Subject & Comp Addresses against Location & Aerial Map callouts">
+              <Button
+                size="small"
+                variant="contained"
+                onClick={handleOpenMapModal}
+                disabled={mapVerificationLoading}
+                startIcon={mapVerificationLoading ? <CircularProgress size={14} color="inherit" /> : <PinDropIcon sx={{ fontSize: 16 }} />}
+                sx={{
+                  bgcolor: 'rgba(255, 255, 255, 0.18)',
+                  color: 'white',
+                  '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.3)' },
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: '0.8rem',
+                  py: 0.4,
+                  px: 1.2,
+                  borderRadius: 1.5
+                }}
+              >
+                {mapVerificationLoading ? 'Verifying Maps...' : 'Verify Map Addresses'}
+              </Button>
             </Tooltip>
-          )}
+            {onRevisionButtonClick && (
+              <Tooltip title="Revision Language">
+                <IconButton onClick={onRevisionButtonClick} size="small" sx={{ color: 'white' }}><LibraryBooksIcon /></IconButton>
+              </Tooltip>
+            )}
+          </Box>
         </Box>
         <TableContainer>
           <Table size="small" aria-label="sales comparison table" className="sales-comparison-table">
@@ -339,6 +481,219 @@ const SalesComparisonSection = ({
           </TableContainer>
         </Paper>
       )}
+
+      {/* Map Address Verification Dialog */}
+      <Dialog
+        open={mapModalOpen}
+        onClose={() => setMapModalOpen(false)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle sx={{ bgcolor: 'primary.main', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <PinDropIcon />
+            <Typography variant="h6" fontWeight="bold">Map Address & Proximity Verification</Typography>
+            {overallStatus && (
+              <Chip
+                size="small"
+                label={overallStatus}
+                sx={{
+                  bgcolor: overallStatus === 'PASS' ? '#2e7d32' : (overallStatus === 'FAIL' ? '#c62828' : '#f57f17'),
+                  color: 'white',
+                  fontWeight: 'bold',
+                  ml: 1
+                }}
+              />
+            )}
+          </Box>
+          <IconButton onClick={() => setMapModalOpen(false)} size="small" sx={{ color: 'white' }}>
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 3 }}>
+          {mapVerificationLoading ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 6 }}>
+              <CircularProgress size={40} sx={{ mb: 2 }} />
+              <Typography variant="body1" fontWeight="medium">
+                Analyzing Location Map & Aerial Map exhibits and extracting callout pins...
+              </Typography>
+            </Box>
+          ) : !mapVerif ? (
+            <Box sx={{ textAlign: 'center', py: 5 }}>
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                Map address verification has not been run yet.
+              </Typography>
+              {onVerifyMapAddresses && (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  startIcon={<PinDropIcon />}
+                  onClick={onVerifyMapAddresses}
+                >
+                  Run Map Address Verification
+                </Button>
+              )}
+            </Box>
+          ) : (
+            <Stack spacing={2.5}>
+              <Paper elevation={0} sx={{ p: 2, bgcolor: 'action.hover', borderRadius: 2 }}>
+                <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
+                  {mapVerif.summary || 'Subject and Comparable addresses cross-verified against Location Map and Aerial Map.'}
+                </Typography>
+              </Paper>
+
+              {/* Side by side comparison table */}
+              <TableContainer sx={{ border: '1px solid rgba(224, 224, 224, 0.8)', borderRadius: 2 }}>
+                <Table size="small">
+                  <TableHead sx={{ bgcolor: 'action.hover' }}>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 'bold', width: '16%' }}>Property</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', width: '28%' }}>Sales Comparison Grid</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', width: '28%' }}>Location Map Callout</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', width: '12%' }}>Status</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', width: '16%' }}>Verification Notes</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {/* Subject Property */}
+                    {subjVerif && (
+                      <TableRow hover sx={{ bgcolor: subjVerif.status === 'MATCH' ? 'rgba(232, 245, 233, 0.4)' : 'inherit' }}>
+                        <TableCell sx={{ fontWeight: 'bold' }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                            <PinDropIcon fontSize="small" color="primary" />
+                            Subject Property
+                          </Box>
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" fontWeight="medium">
+                            {subjVerif.sales_comparison_address || subjectObj?.['Address'] || 'N/A'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2">
+                            {subjVerif.location_map_address || (subjVerif.aerial_map_address ? `Aerial: ${subjVerif.aerial_map_address}` : 'Callout not detected')}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>{getStatusBadge(subjVerif.status)}</TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {subjVerif.details}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    )}
+
+                    {/* Comparables */}
+                    {compsVerif.map((c, idx) => (
+                      <TableRow key={idx} hover sx={{ bgcolor: c.status === 'MATCH' ? 'inherit' : (c.status === 'MISMATCH' ? 'rgba(255, 235, 238, 0.4)' : 'inherit') }}>
+                        <TableCell sx={{ fontWeight: 'bold' }}>
+                          {c.comp_id || `Comparable #${c.comp_num || idx + 1}`}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" fontWeight="medium">
+                            {c.sales_comparison_address || 'N/A'}
+                          </Typography>
+                          {c.sales_comparison_proximity && (
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              Proximity: {c.sales_comparison_proximity}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2">
+                            {c.map_address || 'Pin callout not detected'}
+                          </Typography>
+                          {c.map_proximity && (
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              Pin: {c.map_proximity} {c.map_label ? `(${c.map_label})` : ''}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>{getStatusBadge(c.status)}</TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {c.details}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
+              {/* Detected Maps Thumbnails */}
+              {mapsDetected.length > 0 && (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <MapIcon fontSize="small" />
+                    Detected Map Exhibits ({mapsDetected.length})
+                  </Typography>
+                  <Stack direction="row" spacing={2} sx={{ overflowX: 'auto', pb: 1 }}>
+                    {mapsDetected.map((m, idx) => (
+                      <Box
+                        key={idx}
+                        onClick={() => setPreviewMapImg(m)}
+                        sx={{
+                          border: '1px solid rgba(0,0,0,0.12)',
+                          borderRadius: 2,
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          minWidth: 180,
+                          maxWidth: 220,
+                          transition: 'all 0.2s',
+                          '&:hover': { boxShadow: 3 }
+                        }}
+                      >
+                        {m.image_preview && (
+                          <img
+                            src={m.image_preview}
+                            alt={m.map_type}
+                            style={{ width: '100%', height: 110, objectFit: 'cover' }}
+                          />
+                        )}
+                        <Box sx={{ p: 1 }}>
+                          <Typography variant="caption" fontWeight="bold" display="block">
+                            {m.map_type} (P. {m.page})
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            {m.provider}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Map Exhibit Zoom Dialog */}
+      <Dialog
+        open={Boolean(previewMapImg)}
+        onClose={() => setPreviewMapImg(null)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6">
+            {previewMapImg?.map_type} (Page {previewMapImg?.page})
+          </Typography>
+          <IconButton onClick={() => setPreviewMapImg(null)} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ textAlign: 'center', p: 2 }}>
+          {previewMapImg?.image_preview && (
+            <img
+              src={previewMapImg.image_preview}
+              alt={previewMapImg.map_type}
+              style={{ maxWidth: '100%', maxHeight: '80vh', objectFit: 'contain', borderRadius: 8 }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 };

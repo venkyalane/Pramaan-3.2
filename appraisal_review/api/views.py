@@ -31,6 +31,7 @@ from .offline_requirement_checks import (
     evaluate_client_requirements,
     evaluate_adu_requirements,
     evaluate_escalation_check,
+    evaluate_map_address_verification,
 )
 from .xml_extractor import extract_fields_from_xml, extract_photos_from_xml
 
@@ -794,6 +795,14 @@ def extract_pdf(request):
             elif category_clean == "ESCALATION_CHECK" or "escalation" in prompt_lower:
                 return Response(evaluate_escalation_check(tmp_path, extracted_data=extracted_data_obj))
 
+            # 6. Map Address Verification Check (Subject & Comps from Sales Comparison to Location & Aerial Maps)
+            elif category_clean in ["MAP_VERIFICATION_CHECK", "MAP_VERIFICATION", "MAP_CHECK", "LOCATION_MAP_CHECK"] or any(
+                term in prompt_lower for term in [
+                    "map verification", "verify map", "location map", "aerial map", "map address", "comp address to map", "verify comp address"
+                ]
+            ):
+                return Response(evaluate_map_address_verification(tmp_path, extracted_data=extracted_data_obj))
+
             # 6. XML Field Extraction (When not a specialized check request)
             if is_xml:
                 xml_result = extract_fields_from_xml(tmp_path)
@@ -1445,6 +1454,61 @@ def extract_photos_view(request):
             "categories": cats,
             "photos": photos
         })
+    except Exception as exc:
+        traceback.print_exc()
+        return Response(
+            {"status": "error", "message": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    finally:
+        if uploaded_file and tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+@api_view(["POST"])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+def verify_map_addresses_view(request):
+    """
+    Verifies Subject Address and Comparable Addresses & Proximities from the
+    Sales Comparison Approach against Location Map and Aerial Map exhibits.
+    Supports file upload (PDF/XML) or file_path/path with optional extracted_data.
+    """
+    uploaded_file = request.FILES.get("file") or request.FILES.get("pdf_file") or request.FILES.get("xml_file")
+    file_path = request.data.get("file_path") or request.data.get("path")
+    extracted_data_raw = request.data.get("extracted_data")
+    extracted_data_obj = None
+    if extracted_data_raw:
+        if isinstance(extracted_data_raw, dict):
+            extracted_data_obj = extracted_data_raw
+        elif isinstance(extracted_data_raw, str):
+            try:
+                import json
+                extracted_data_obj = json.loads(extracted_data_raw)
+            except Exception:
+                pass
+
+    if not uploaded_file and not file_path:
+        return Response(
+            {"status": "error", "message": "No file or file_path provided for map address verification."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    tmp_path = None
+    if uploaded_file:
+        suffix = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            for chunk in uploaded_file.chunks():
+                tmp.write(chunk)
+            tmp_path = tmp.name
+    else:
+        tmp_path = file_path
+
+    try:
+        result = evaluate_map_address_verification(tmp_path, extracted_data=extracted_data_obj)
+        return Response(result)
     except Exception as exc:
         traceback.print_exc()
         return Response(

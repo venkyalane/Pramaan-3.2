@@ -20,7 +20,8 @@ const Form1007 = ({
   onSubjectRevisionButtonClick, onContractRevisionButtonClick, onNeighborhoodRevisionButtonClick,
   onSiteRevisionButtonClick, onImprovementsRevisionButtonClick, onSalesGridRevisionButtonClick,
   onReconciliationRevisionButtonClick, onCostApproachRevisionButtonClick, onCertificationRevisionButtonClick,
-  on1007RevisionButtonClick, revisionHandlers
+  on1007RevisionButtonClick, revisionHandlers,
+  onVerifyMapAddresses, mapVerificationData, mapVerificationLoading
 }) => (
 
   <>
@@ -61,6 +62,9 @@ const Form1007 = ({
       manualValidations={manualValidations}
       handleManualValidation={handleManualValidation}
       revisionHandlers={revisionHandlers}
+      onVerifyMapAddresses={onVerifyMapAddresses}
+      mapVerificationData={mapVerificationData}
+      mapVerificationLoading={mapVerificationLoading}
     />
     <div id="rent-schedule-section" style={{ marginBottom: '1rem', marginTop: '1rem' }} className="card shadow mb-4">
       <div className="card-header CAR1 bg-info text-white" style={{ position: 'sticky', top: 0, zIndex: 10 }}>

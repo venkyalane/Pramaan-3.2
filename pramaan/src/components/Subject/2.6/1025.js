@@ -20,7 +20,8 @@ const Form1025 = ({
     onContractRevisionButtonClick, onNeighborhoodRevisionButtonClick, onSiteRevisionButtonClick,
     onImprovementsRevisionButtonClick, onSalesGridRevisionButtonClick, onReconciliationRevisionButtonClick,
     onCostApproachRevisionButtonClick, onCertificationRevisionButtonClick, on1007RevisionButtonClick,
-    ComparableRentAdjustments, COMPARABLE_RENTAL_DATA, SUBJECT_RENT_SCHEDULE, revisionHandlers
+    ComparableRentAdjustments, COMPARABLE_RENTAL_DATA, SUBJECT_RENT_SCHEDULE, revisionHandlers,
+    onVerifyMapAddresses, mapVerificationData, mapVerificationLoading
 }) => (
 
     <>
@@ -61,6 +62,9 @@ const Form1025 = ({
             handleManualValidation={handleManualValidation}
             onRevisionButtonClick={onSalesGridRevisionButtonClick}
             revisionHandlers={revisionHandlers}
+            onVerifyMapAddresses={onVerifyMapAddresses}
+            mapVerificationData={mapVerificationData}
+            mapVerificationLoading={mapVerificationLoading}
         />
         <div id="comparable-rental-data" style={{ marginBottom: '1rem', marginTop: '1rem' }} className="card shadow mb-4">
             <div className="card-header CAR1 bg-info text-white" style={{ position: 'sticky', top: 0, zIndex: 10 }}>

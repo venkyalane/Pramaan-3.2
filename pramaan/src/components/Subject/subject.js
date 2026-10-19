@@ -41,7 +41,8 @@ import {
   PhotoLibrary as PhotoLibraryIcon,
   Search as SearchIcon,
   FilterList as FilterListIcon,
-  Clear as ClearIcon
+  Clear as ClearIcon,
+  PinDrop as PinDropIcon
 } from '@mui/icons-material';
 import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import VisibilityTwoToneIcon from '@mui/icons-material/VisibilityTwoTone';
@@ -77,6 +78,7 @@ import ClientRequirementCheck, { CLIENT_REQUIREMENT_PROMPT } from '../check/Clie
 import EscalationCheck, { ESCALATION_CHECK_PROMPT } from '../check/EscalationCheck';
 import FhaCheck, { FHA_REQUIREMENTS_PROMPT } from '../check/FhaCheck';
 import ADUCheck, { ADU_REQUIREMENTS_PROMPT } from '../check/ADUCheck';
+import MapVerificationCheck, { MAP_VERIFICATION_PROMPT } from '../check/MapVerificationCheck';
 
 import { generateValidationLogPDF } from '../../utils/validationLogger';
 
@@ -667,6 +669,9 @@ function Subject({ defaultFormType }) {
   const [escalationLoading, setEscalationLoading] = useState(false);
   const [escalationResponse, setEscalationResponse] = useState(null);
   const [escalationError, setEscalationError] = useState('');
+  const [mapVerifLoading, setMapVerifLoading] = useState(false);
+  const [mapVerifResponse, setMapVerifResponse] = useState(null);
+  const [mapVerifError, setMapVerifError] = useState('');
   const [extractedSections, setExtractedSections] = useState(new Set());
   const [visibleSections, setVisibleSections] = useState(new Set());
   const [htmlFile, setHtmlFile] = useState(null);
@@ -763,6 +768,7 @@ function Subject({ defaultFormType }) {
         if (valLog.promptAnalysis) setPromptAnalysisResponse(valLog.promptAnalysis);
         if (valLog.fhaCheck) setFhaResponse(valLog.fhaCheck);
         if (valLog.aduCheck) setADUResponse(valLog.aduCheck);
+        if (valLog.mapVerificationCheck || valLog.map_verification) setMapVerifResponse(valLog.mapVerificationCheck || valLog.map_verification);
       }
 
       if (pdfFile) {
@@ -2889,6 +2895,7 @@ function Subject({ defaultFormType }) {
     { id: 'condo-coop-section', title: 'Condo/Co-op', category: ['CONDO', 'CONDO_FORECLOSURE'], icon: <BusinessIcon /> },
     { id: 'appraiser-section', title: 'Certification', category: 'CERTIFICATION', icon: <VerifiedUserIcon /> },
     { id: 'photos-exhibits-section', title: 'Photos & Exhibits', category: 'EXTRACTED_PHOTOS', icon: <PhotoLibraryIcon /> },
+    { id: 'map-address-verification-check', title: 'Map Address Verification', category: 'MAP_VERIFICATION_CHECK', icon: <PinDropIcon /> },
     { id: 'raw-output', title: 'Raw Output', icon: <CodeIcon /> },
   ], []);
 
@@ -3293,9 +3300,11 @@ function Subject({ defaultFormType }) {
     setFhaResponse(null);
     setADUResponse(null);
     setEscalationResponse(null);
+    setMapVerifResponse(null);
     setStateReqError('');
     setClientReqError('');
     setEscalationError('');
+    setMapVerifError('');
     setActiveSection(null);
     setModalContent(null);
     setComparisonData({});
@@ -3336,9 +3345,11 @@ function Subject({ defaultFormType }) {
     setFhaResponse(null);
     setADUResponse(null);
     setEscalationResponse(null);
+    setMapVerifResponse(null);
     setStateReqError('');
     setClientReqError('');
     setEscalationError('');
+    setMapVerifError('');
     setActiveSection(null);
     setModalContent(null);
 
@@ -3638,6 +3649,12 @@ function Subject({ defaultFormType }) {
     if (result.mathematical_verification) {
       normalizedFields["MATHEMATICAL_VERIFICATION"] = result.mathematical_verification;
       normalizedFields["mathematical_verification"] = result.mathematical_verification;
+    }
+    if (result.map_verification || result.MAP_VERIFICATION) {
+      const mv = result.map_verification || result.MAP_VERIFICATION;
+      normalizedFields["MAP_VERIFICATION"] = mv;
+      normalizedFields["map_verification"] = mv;
+      setMapVerifResponse(mv);
     }
     if (result.clean_data && typeof result.clean_data === 'object') {
       normalizedFields["clean_data"] = result.clean_data;
@@ -4228,14 +4245,66 @@ function Subject({ defaultFormType }) {
     }
   };
 
+  const handleMapVerificationCheck = async (promptOrForceReload = false, fileOverride = null, dataOverride = null, formTypeOverride = null) => {
+    const activeFile = fileOverride || selectedFile || xmlFile;
+    if (!activeFile) {
+      setMapVerifError('Please select a PDF or XML file first.');
+      return;
+    }
+
+    setMapVerifLoading(true);
+    setMapVerifError('');
+
+    const activeFormType = formTypeOverride || selectedFormType || '1004';
+    const activeData = dataOverride || data;
+    const commentPrompt = typeof promptOrForceReload === 'string' ? promptOrForceReload : MAP_VERIFICATION_PROMPT;
+
+    const formData = new FormData();
+    formData.append('file', activeFile);
+    formData.append('form_type', activeFormType);
+    formData.append('comment', commentPrompt);
+    formData.append('category', 'MAP_VERIFICATION_CHECK');
+    if (activeData && Object.keys(activeData).length > 0) {
+      formData.append('extracted_data', JSON.stringify(sanitizeExtractedDataForUpload(activeData)));
+    }
+
+    try {
+      let res = await fetch(`${API_BASE_URL}/api/verify-map-addresses/`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        res = await fetchWithRetry(`${API_BASE_URL}/api/extract/`, {
+          method: 'POST',
+          body: formData,
+        }, 2, 1000);
+      }
+
+      const result = await res.json();
+      if (!res.ok && !result.map_verification && !result.subject_verification) {
+        throw new Error(result.detail || result.message || `HTTP error! status: ${res.status}`);
+      }
+      const responseData = result.fields || result;
+      setMapVerifResponse(responseData);
+      return responseData;
+    } catch (e) {
+      const errorMsg = e.message || 'An unexpected error occurred during map address verification.';
+      setMapVerifError(errorMsg);
+    } finally {
+      setMapVerifLoading(false);
+    }
+  };
+
   const triggerAutoRequirementChecks = (activeFile, extractedData, formType) => {
     if (!activeFile) return;
 
-    // Concurrently trigger State, Client, and Escalation checks upon file upload
+    // Concurrently trigger State, Client, Escalation, and Map Verification checks upon file upload
     Promise.allSettled([
       handleStateRequirementCheck(true, activeFile, extractedData, formType),
       handleClientRequirementCheck(true, activeFile, extractedData, formType),
       handleEscalationCheck(true, activeFile, extractedData, formType),
+      handleMapVerificationCheck(true, activeFile, extractedData, formType),
     ]).catch(err => {
       console.error("Auto requirement checks error:", err);
     });
@@ -4647,6 +4716,7 @@ function Subject({ defaultFormType }) {
         escalationCheck: escalationResponse,
         fhaCheck: fhaResponse,
         aduCheck: ADUResponse,
+        mapVerificationCheck: mapVerifResponse,
         validationErrors,
         validationSuccesses,
         consistencyErrors
@@ -6047,7 +6117,7 @@ function Subject({ defaultFormType }) {
 
 
     const props = {
-      data, allData: data, extractionAttempted, handleDataChange, editingField, setEditingField, isEditable, highlightedSubjectFields, highlightedContractFields, highlightedSiteFields, summaryFields, subjectFields, contractFields, neighborhoodFields, siteFields, improvementsFields, salesGridRows, salesGridRows1025, comparableSales, salesComparisonAdditionalInfoFields, salesHistoryFields, priorSaleHistoryFields, reconciliationFields, costApproachFields, incomeApproachFields, pudInformationFields, marketConditionsFields, marketConditionsRows, condoCoopProjectsRows, condoForeclosureFields, appraiserFields, supplementalAddendumFields, uniformResidentialAppraisalReportFields, appraisalAndReportIdentificationFields, projectSiteFields, projectInfoFields, projectAnalysisFields, unitDescriptionsFields, imageAnalysisFields, dataConsistencyFields, ComparableRentAdjustments, comparableRents, RentSchedulesFIELDS2, rentScheduleReconciliationFields, formType: selectedFormType, comparisonData, getComparisonStyle, SalesComparisonSection, EditableField, infoOfSalesFields, loading, stateRequirementFields, handleStateRequirementCheck, stateReqLoading, stateReqResponse, stateReqError, handleUnpaidOkCheck, unpaidOkLoading, unpaidOkResponse, unpaidOkError, handleClientRequirementCheck, clientReqLoading, clientReqResponse, clientReqError, handleFhaCheck, handleADUCheck, fhaLoading, fhaResponse, fhaError, ADULoading, handleEscalationCheck, escalationLoading, escalationResponse, escalationError, onDataChange: handleDataChange, handleExtract, manualValidations, handleManualValidation, SUBJECT_RENT_SCHEDULE, COMPARABLE_RENTAL_DATA, SubjectRentScheduleTable,
+      data, allData: data, extractionAttempted, handleDataChange, editingField, setEditingField, isEditable, highlightedSubjectFields, highlightedContractFields, highlightedSiteFields, summaryFields, subjectFields, contractFields, neighborhoodFields, siteFields, improvementsFields, salesGridRows, salesGridRows1025, comparableSales, salesComparisonAdditionalInfoFields, salesHistoryFields, priorSaleHistoryFields, reconciliationFields, costApproachFields, incomeApproachFields, pudInformationFields, marketConditionsFields, marketConditionsRows, condoCoopProjectsRows, condoForeclosureFields, appraiserFields, supplementalAddendumFields, uniformResidentialAppraisalReportFields, appraisalAndReportIdentificationFields, projectSiteFields, projectInfoFields, projectAnalysisFields, unitDescriptionsFields, imageAnalysisFields, dataConsistencyFields, ComparableRentAdjustments, comparableRents, RentSchedulesFIELDS2, rentScheduleReconciliationFields, formType: selectedFormType, comparisonData, getComparisonStyle, SalesComparisonSection, EditableField, infoOfSalesFields, loading, stateRequirementFields, handleStateRequirementCheck, stateReqLoading, stateReqResponse, stateReqError, handleUnpaidOkCheck, unpaidOkLoading, unpaidOkResponse, unpaidOkError, handleClientRequirementCheck, clientReqLoading, clientReqResponse, clientReqError, handleFhaCheck, handleADUCheck, fhaLoading, fhaResponse, fhaError, ADULoading, handleEscalationCheck, escalationLoading, escalationResponse, escalationError, handleMapVerificationCheck, mapVerifLoading, mapVerifResponse, mapVerifError, onVerifyMapAddresses: handleMapVerificationCheck, mapVerificationData: mapVerifResponse || data.MAP_VERIFICATION || data.map_verification, mapVerificationLoading: mapVerifLoading, onDataChange: handleDataChange, handleExtract, manualValidations, handleManualValidation, SUBJECT_RENT_SCHEDULE, COMPARABLE_RENTAL_DATA, SubjectRentScheduleTable,
       onSubjectRevisionButtonClick: () => setRevisionLangDialogOpen(true),
       onContractRevisionButtonClick: () => setContractRevisionLangDialogOpen(true),
       onNeighborhoodRevisionButtonClick: () => setNeighborhoodRevisionLangDialogOpen(true),
@@ -6976,6 +7046,15 @@ function Subject({ defaultFormType }) {
                   loading={escalationLoading}
                   response={escalationResponse}
                   error={escalationError}
+                />
+              </div>
+
+              <div id="map-address-verification-check" className="mb-4">
+                <MapVerificationCheck
+                  onPromptSubmit={handleMapVerificationCheck}
+                  loading={mapVerifLoading}
+                  response={mapVerifResponse || data.MAP_VERIFICATION || data.map_verification}
+                  error={mapVerifError}
                 />
               </div>
 
