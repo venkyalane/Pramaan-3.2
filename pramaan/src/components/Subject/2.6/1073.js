@@ -17,7 +17,8 @@ const Form1073 = ({
   handleClientRequirementCheck, clientReqLoading, handleEscalationCheck, escalationLoading,
   manualValidations, handleManualValidation, onSubjectRevisionButtonClick, onContractRevisionButtonClick,
   onNeighborhoodRevisionButtonClick, onSalesGridRevisionButtonClick, onReconciliationRevisionButtonClick,
-  onCostApproachRevisionButtonClick, onCertificationRevisionButtonClick, selectedFile, revisionHandlers
+  onCostApproachRevisionButtonClick, onCertificationRevisionButtonClick, selectedFile, revisionHandlers,
+  onVerifyMapAddresses, mapVerificationData, mapVerificationLoading
 }) => (
 
   <>
@@ -65,7 +66,11 @@ const Form1073 = ({
       manualValidations={manualValidations}
       handleManualValidation={handleManualValidation}
       onRevisionButtonClick={onSalesGridRevisionButtonClick}
-      revisionHandlers={revisionHandlers} />
+      revisionHandlers={revisionHandlers}
+      onVerifyMapAddresses={onVerifyMapAddresses}
+      mapVerificationData={mapVerificationData}
+      mapVerificationLoading={mapVerificationLoading}
+    />
     <GridInfoCard id="reconciliation-section" title="RECONCILIATION" fields={reconciliationFields} data={data.RECONCILIATION} cardClass="bg-secondary" extractionAttempted={extractionAttempted} onDataChange={(field, value) => handleDataChange(['RECONCILIATION', ...field], value)} editingField={editingField} setEditingField={setEditingField} isEditable={isEditable} allData={allData} loading={loading} loadingSection={loadingSection} manualValidations={manualValidations} handleManualValidation={handleManualValidation} onRevisionButtonClick={onReconciliationRevisionButtonClick} revisionHandlers={revisionHandlers} />
     <GridInfoCard id="cost-approach-section" title="Cost Approach" fields={costApproachFields} data={data} cardClass="bg-dark" extractionAttempted={extractionAttempted} onDataChange={(field, value) => handleDataChange(field, value)} editingField={editingField} setEditingField={setEditingField} isEditable={isEditable} allData={allData} loading={loading} loadingSection={loadingSection} manualValidations={manualValidations} handleManualValidation={handleManualValidation} onRevisionButtonClick={onCostApproachRevisionButtonClick} revisionHandlers={revisionHandlers} />
     <GridInfoCard id="income-approach-section" title="Income Approach" fields={incomeApproachFields} data={data} cardClass="bg-danger" extractionAttempted={extractionAttempted} onDataChange={(field, value) => handleDataChange(field, value)} editingField={editingField} setEditingField={setEditingField} isEditable={isEditable} allData={allData} loading={loading} loadingSection={loadingSection} manualValidations={manualValidations} handleManualValidation={handleManualValidation} revisionHandlers={revisionHandlers} />

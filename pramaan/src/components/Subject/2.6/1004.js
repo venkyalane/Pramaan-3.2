@@ -18,7 +18,8 @@ const Form1004 = ({
   manualValidations, handleManualValidation, onSubjectRevisionButtonClick, onContractRevisionButtonClick,
   onNeighborhoodRevisionButtonClick, onSiteRevisionButtonClick, onImprovementsRevisionButtonClick,
   onSalesGridRevisionButtonClick, onReconciliationRevisionButtonClick, onCostApproachRevisionButtonClick,
-  onCertificationRevisionButtonClick, selectedFile, revisionHandlers
+  onCertificationRevisionButtonClick, selectedFile, revisionHandlers,
+  onVerifyMapAddresses, mapVerificationData, mapVerificationLoading
 }) => (
 
   <>
@@ -61,6 +62,9 @@ const Form1004 = ({
       handleManualValidation={handleManualValidation}
       onRevisionButtonClick={onSalesGridRevisionButtonClick}
       revisionHandlers={revisionHandlers}
+      onVerifyMapAddresses={onVerifyMapAddresses}
+      mapVerificationData={mapVerificationData}
+      mapVerificationLoading={mapVerificationLoading}
     />
 
     <GridInfoCard id="reconciliation-section" title="RECONCILIATION" fields={reconciliationFields} data={data.RECONCILIATION || data} cardClass="bg-secondary" extractionAttempted={extractionAttempted} onDataChange={(field, value) => handleDataChange(['RECONCILIATION', ...field], value)} editingField={editingField} setEditingField={setEditingField} isEditable={true} allData={allData} loading={loading} loadingSection={loadingSection} manualValidations={manualValidations} handleManualValidation={handleManualValidation} onRevisionButtonClick={onReconciliationRevisionButtonClick} revisionHandlers={revisionHandlers} />

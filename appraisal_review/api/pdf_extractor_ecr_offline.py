@@ -18,7 +18,32 @@ vector-graphic checkbox detection, and spatial cell slicing:
 import os
 import re
 import json
-import pymupdf
+try:
+    import pymupdf
+except Exception:
+    pymupdf = None
+
+if pymupdf is None:
+    class _DummyRect:
+        def __init__(self, *args, **kwargs):
+            if args:
+                self.x0 = args[0] if len(args) > 0 else 0
+                self.y0 = args[1] if len(args) > 1 else 0
+                self.x1 = args[2] if len(args) > 2 else 0
+                self.y1 = args[3] if len(args) > 3 else 0
+            else:
+                self.x0 = self.y0 = self.x1 = self.y1 = 0
+        def intersects(self, *args, **kwargs):
+            return False
+    class _DummyMuPDF:
+        Rect = _DummyRect
+        PDF_WIDGET_TYPE_CHECKBOX = 2
+        def open(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyMuPDF native library (_mupdf.pyd) is blocked by Windows Application Control / Smart App Control. "
+                "To use offline PDF extraction, please configure an exclusion or turn off Smart App Control in Windows Security."
+            )
+    pymupdf = _DummyMuPDF()
 
 
 # =========================================================================

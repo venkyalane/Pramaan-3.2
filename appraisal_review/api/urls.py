@@ -30,6 +30,7 @@ urlpatterns = [
     path('extract-from-html/', views.extract_from_html_view, name='extract_from_html'),
     path('extract-photos/', views.extract_photos_view, name='extract_photos'),
     path('extract-maps/', views.extract_maps_view, name='extract_maps'),
+    path('verify-map-addresses/', views.verify_map_addresses_view, name='verify_map_addresses'),
 
     path('save-report/', views.SaveReportView.as_view(), name='save-report'),
 

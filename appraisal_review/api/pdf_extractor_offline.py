@@ -8,11 +8,39 @@ import json
 import base64
 from typing import Dict, Any, List, Optional
 import pdfplumber
-import pymupdf
+
 try:
-    import fitz
-except ImportError:
-    import pymupdf as fitz
+    import pymupdf
+    try:
+        import fitz
+    except Exception:
+        fitz = pymupdf
+except Exception:
+    pymupdf = None
+    fitz = None
+
+if pymupdf is None:
+    class _DummyRect:
+        def __init__(self, *args, **kwargs):
+            if args:
+                self.x0 = args[0] if len(args) > 0 else 0
+                self.y0 = args[1] if len(args) > 1 else 0
+                self.x1 = args[2] if len(args) > 2 else 0
+                self.y1 = args[3] if len(args) > 3 else 0
+            else:
+                self.x0 = self.y0 = self.x1 = self.y1 = 0
+        def intersects(self, *args, **kwargs):
+            return False
+    class _DummyMuPDF:
+        Rect = _DummyRect
+        PDF_WIDGET_TYPE_CHECKBOX = 2
+        def open(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyMuPDF native library (_mupdf.pyd) is blocked by Windows Application Control / Smart App Control. "
+                "To use offline PDF extraction, please configure an exclusion or turn off Smart App Control in Windows Security."
+            )
+    pymupdf = _DummyMuPDF()
+    fitz = pymupdf
 
 
 
@@ -6125,6 +6153,15 @@ def extract_fields_from_pdf_offline(pdf_path):
                 clean_section_data["EXTRACTED_PHOTOS"] = extracted_photos
                 clean_section_data["extracted_photos"] = extracted_photos
 
+            map_verification_data = None
+            try:
+                from .map_verification import verify_sales_comparison_to_maps
+                map_verification_data = verify_sales_comparison_to_maps(pdf_path, extracted_data=clean_data)
+                clean_data["MAP_VERIFICATION"] = map_verification_data
+                unified_fields["MAP_VERIFICATION"] = map_verification_data
+            except Exception:
+                pass
+
             raw_json_str = json.dumps(unified_fields, indent=2)
             unified_fields["raw"] = raw_json_str
 
@@ -6136,6 +6173,7 @@ def extract_fields_from_pdf_offline(pdf_path):
                 "pages_detected": page_indices,
                 "extracted_photos": extracted_photos,
                 "mathematical_verification": math_invariants,
+                "map_verification": map_verification_data,
                 "status": "success"
             }
 

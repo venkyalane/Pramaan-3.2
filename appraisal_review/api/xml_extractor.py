@@ -14,10 +14,10 @@ from typing import Dict, Any, Optional, Tuple, List
 
 try:
     import pymupdf as fitz
-except ImportError:
+except Exception:
     try:
         import fitz
-    except ImportError:
+    except Exception:
         fitz = None
 
 def _clean_currency(val: Any) -> str:
@@ -4314,6 +4314,16 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True,
         fields["EXTRACTED_PHOTOS"] = extracted_photos
         fields["extracted_photos"] = extracted_photos
 
+    map_verification_data = None
+    try:
+        from .map_verification import verify_sales_comparison_to_maps
+        map_verification_data = verify_sales_comparison_to_maps(xml_path, extracted_data=fields)
+        if map_verification_data:
+            fields["MAP_VERIFICATION"] = map_verification_data
+            clean_data["MAP_VERIFICATION"] = map_verification_data
+    except Exception:
+        pass
+
     return {
         "status": "success",
         "form_type": form_type,
@@ -4327,4 +4337,7 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True,
         "has_embedded_pdf": has_embedded_pdf,
         "extracted_photos": extracted_photos,
         "EXTRACTED_PHOTOS": extracted_photos,
+        "map_verification": map_verification_data,
+        "MAP_VERIFICATION": map_verification_data,
     }
+

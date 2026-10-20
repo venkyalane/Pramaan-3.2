@@ -21,7 +21,8 @@ const Form1004And1007 = ({
   onSubjectRevisionButtonClick, onContractRevisionButtonClick, onNeighborhoodRevisionButtonClick,
   onSiteRevisionButtonClick, onImprovementsRevisionButtonClick, onSalesGridRevisionButtonClick,
   onReconciliationRevisionButtonClick, onCostApproachRevisionButtonClick, onCertificationRevisionButtonClick,
-  on1007RevisionButtonClick, selectedFile, revisionHandlers
+  on1007RevisionButtonClick, selectedFile, revisionHandlers,
+  onVerifyMapAddresses, mapVerificationData, mapVerificationLoading
 }) => (
   <>
     <ActionButtons
@@ -174,6 +175,9 @@ const Form1004And1007 = ({
       manualValidations={manualValidations}
       handleManualValidation={handleManualValidation}
       revisionHandlers={revisionHandlers}
+      onVerifyMapAddresses={onVerifyMapAddresses}
+      mapVerificationData={mapVerificationData}
+      mapVerificationLoading={mapVerificationLoading}
     />
 
     {/* Form 1007 Rent Schedule Grid */}
