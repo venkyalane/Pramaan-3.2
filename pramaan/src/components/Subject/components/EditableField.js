@@ -22,6 +22,7 @@ import { checkUnitDescriptionsFieldsNotBlank } from '../../../validations/unitDe
 import { checkProjectSiteFieldsNotBlank } from '../../../validations/projectSiteValidation';
 import { checkPriorSaleHistoryFieldsNotBlank } from '../../../validations/priorSaleHistoryValidation';
 import { checkInfoOfSalesFieldsNotBlank } from '../../../validations/infoOfSalesValidation';
+import { isMandatoryField, checkMandatoryField } from '../../../validations/mandatoryValidation';
 import { Tooltip, IconButton } from '@mui/material';
 import { PlaylistAdd as PlaylistAddIcon, CheckCircle as CheckCircleIcon } from '@mui/icons-material';
 
@@ -130,6 +131,11 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
     'ANSI': [checkAnsi],
     'State': [checkStateRequirements],
     'Property Address': [checkSubjectFieldsNotBlank, checkSubjectAddressInconsistency, checkPropertyAddressHtmlConsistency],
+    'City': [checkSubjectFieldsNotBlank],
+    'Zip Code': [checkSubjectFieldsNotBlank],
+    'Appraiser Fee': [checkSubjectFieldsNotBlank],
+    "Appraiser's Fee": [checkSubjectFieldsNotBlank],
+    'Appraisal Fee': [checkSubjectFieldsNotBlank],
     'County': [checkSubjectFieldsNotBlank],
     'Borrower': [checkBorrowerNameVsHtml, checkSubjectFieldsNotBlank],
     'Owner of Public Record': [checkSubjectFieldsNotBlank],
@@ -145,6 +151,13 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
     'Client/Lender Company Name': [checkUnpaidLender, checkClientNameHtmlConsistency, checkLenderNameInconsistency],
     'Name': [checkAppraiserVendorNameConsistency],
     'Address (Lender/Client)': [checkLenderAddressHtmlInconsistency, checkLenderAddressInconsistency, checkSubjectFieldsNotBlank],
+    'Are the utilities and off-site improvements typical for the market area?': [(field, text, data) => checkYesNoWithComment(field, text, data, { name: field, wantedValue: 'yes', unwantedValue: 'no' })],
+    'ESTIMATED COST NEW TYPE': [checkCostNew],
+    'INDICATED VALUE BY COST APPROACH': [checkIndicatedValueByCostApproach, checkCostApproachFieldsNotBlank],
+    'OPINION OF SITE VALUE': [checkCostApproachFieldsNotBlank],
+    'Remaining Economic Life': [checkCostApproachFieldsNotBlank],
+    'Source of Cost Data': [checkSourceOfCostData],
+    'Effective Date': [checkCostApproachFieldsNotBlank],
 
     // Neighborhood Validations
     'one unit housing price(high,low,pred)': [checkHousingPriceAndAge, checkNeighborhoodFieldsNotBlank],
@@ -757,6 +770,14 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
       }
     }
 
+    const isFieldMandatory = isMandatoryField(lookupField, allData || data, formTypeVal, fieldPath);
+    if (isFieldMandatory && (!validationResult || !validationResult.isError)) {
+      const manRes = checkMandatoryField(lookupField, text, allData || data, fieldPath, saleName, formTypeVal);
+      if (manRes && manRes.isError) {
+        validationResult = manRes;
+      }
+    }
+
     if (validationResult?.message) {
       const isMsgBlank = (
         validationResult.message.includes('should not be blank') ||
@@ -765,7 +786,7 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
         validationResult.message.includes('is mandatory') ||
         validationResult.message.includes('cannot be empty')
       );
-      if (isMsgBlank && !showBlankValidation && !isMissing) {
+      if (isMsgBlank && !showBlankValidation && !isMissing && !validationResult.skipBlankFilter && !isFieldMandatory) {
         validationResult = null;
       }
     }
@@ -837,6 +858,13 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
               return <div style={{ whiteSpace: 'pre-wrap' }}>{value}</div>;
             }
             if (isValEmpty) {
+              if (validation.style?.backgroundColor === '#ff0015ff') {
+                return (
+                  <span style={{ color: '#ffffff', fontStyle: 'italic', fontSize: '0.78rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                    <span style={{ fontSize: '0.85rem' }}>⚠️</span> [Mandatory - Blank]
+                  </span>
+                );
+              }
               return <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '0.85rem', userSelect: 'none' }}></span>;
             }
             return (

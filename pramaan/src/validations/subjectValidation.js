@@ -1,7 +1,7 @@
 const checkNotBlank = (field, text, fieldName) => {
     if (field === fieldName) {
         if (!text || String(text).trim() === '') {
-            return { isError: true, message: `'${fieldName}' should not be blank.` };
+            return { isError: true, skipBlankFilter: true, isMandatoryBlank: true, message: `'${fieldName}' should not be blank.` };
         }
         return { isMatch: true };
     }
@@ -32,6 +32,9 @@ export const checkSubjectFieldsNotBlank = (field, text) => {
         'Borrower',
         'City',
         'Zip Code',
+        'Appraiser Fee',
+        "Appraiser's Fee",
+        'Appraisal Fee',
         'Owner of Public Record',
         'Legal Description',
         "Assessor's Parcel #",

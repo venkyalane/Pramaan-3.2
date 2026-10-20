@@ -222,7 +222,7 @@ def _detect_1004mc_presence(root: ET.Element, embedded_doc: Optional[ET.Element]
     return False, "Not Present"
 
 
-def _detect_form_type_from_xml(root: ET.Element) -> str:
+def _detect_form_type_from_xml(root: ET.Element, file_path_or_name: str = "", embedded_doc: Optional[ET.Element] = None) -> str:
     """
     Dynamically identifies the exact appraisal form type from MISMO XML DOM elements.
     Checks REPORT attributes, primary FORM, attached addenda forms, and rental analyses.
@@ -234,6 +234,9 @@ def _detect_form_type_from_xml(root: ET.Element) -> str:
     rep_attrib = report.attrib if report is not None else {}
     mismo_form = rep_attrib.get("AppraisalFormType", "")
     mismo_other = rep_attrib.get("AppraisalFormTypeOtherDescription", "")
+    uspap_desc = rep_attrib.get("USPAPReportDescription", "")
+    appr_file_id = rep_attrib.get("AppraiserFileIdentifier", "")
+    addl_file_id = rep_attrib.get("AppraiserAdditionalFileIdentifier", "")
     
     primary_form_name = ""
     primary_form_id = ""
@@ -251,24 +254,67 @@ def _detect_form_type_from_xml(root: ET.Element) -> str:
             primary_form_name = name
             primary_form_id = ident
             
-    combined_text = f"{mismo_form} {mismo_other} {primary_form_name} {primary_form_id} " + " ".join(all_form_names)
+    combined_text = f"{mismo_form} {mismo_other} {uspap_desc} {appr_file_id} {addl_file_id} {primary_form_name} {primary_form_id} " + " ".join(all_form_names)
     ct = combined_text.upper()
-    
-    # Strict 1007 check: only true Form 1007 addendum (not basic page 3 income approach)
-    has_1007 = any(
+
+    fn = os.path.basename(file_path_or_name).upper() if file_path_or_name else ""
+    full_p = str(file_path_or_name).replace("\\", "/").upper()
+    is_explicit_1007_file = bool(re.search(r'\b1004[_\-+ ]*1007\b', fn) or "1004+1007" in full_p or "1004-1007" in full_p or re.search(r'\b1004[_\-+ ]*1007\b', ct))
+    is_explicit_1004_folder = bool(("2.6/1004/" in full_p or full_p.endswith("2.6/1004") or "/2.6/1004" in full_p) and not is_explicit_1007_file)
+
+    # 1. Check XML RESIDENTIAL_RENT_SCHEDULE or SINGLE_FAMILY_RENT_SCHEDULE with actual rent comps
+    has_rent_comps = False
+    for sched_tag in [".//RESIDENTIAL_RENT_SCHEDULE", ".//SINGLE_FAMILY_RENT_SCHEDULE", ".//RENT_SCHEDULE"]:
+        rrs = root.find(sched_tag)
+        if rrs is not None:
+            for rental in rrs.findall(".//RESIDENTIAL_RENTAL"):
+                rent_amt = rental.attrib.get("MonthlyRentAmount", "") or rental.attrib.get("MarketAdjustedMonthlyRentAmount", "")
+                if rent_amt and rent_amt not in ("0", "0.00", "$0", "$0.00"):
+                    has_rent_comps = True
+                    break
+                seq = rental.attrib.get("PropertySequenceIdentifier", "")
+                if seq and seq != "0" and (rent_amt or rental.attrib.get("DataSourceDescription") or rental.attrib.get("ExpenseAdjustedMonthlyRentAmount")):
+                    has_rent_comps = True
+                    break
+            if has_rent_comps:
+                break
+
+    # 2. Strict 1007 check in FORM addenda names
+    has_1007_form_tag = any(
         re.search(r"\b(?:1007|FNM\s*1007|FRE\s*1000|SRX)\b", f, re.IGNORECASE) or
         re.search(r"\b(?:single\s*family\s*(?:comparable\s*)?rent\s*schedule)\b", f, re.IGNORECASE)
         for f in all_form_names
     )
-    if not has_1007 and re.search(r"\b(?:1007|FNM\s*1007|FRE\s*1000)\b", f"{mismo_form} {mismo_other}", re.IGNORECASE):
-        has_1007 = True
+    if not has_1007_form_tag and re.search(r"\b(?:1007|FNM\s*1007|FRE\s*1000)\b", f"{mismo_form} {mismo_other}", re.IGNORECASE):
+        has_1007_form_tag = True
 
-    if not has_1007 and any(re.search(r"\brent\s*schedule\b", f, re.IGNORECASE) for f in all_form_names):
+    if not has_1007_form_tag and any(re.search(r"\brent\s*schedule\b", f, re.IGNORECASE) for f in all_form_names):
         if not ("1025" in ct or "SMALL RESIDENTIAL" in ct):
-            has_1007 = True
+            has_1007_form_tag = True
 
-    if not has_1007 and root.find(".//SINGLE_FAMILY_RENT_SCHEDULE") is not None:
-        has_1007 = True
+    if not has_1007_form_tag and root.find(".//SINGLE_FAMILY_RENT_SCHEDULE") is not None:
+        has_1007_form_tag = True
+
+    # 3. Check embedded PDF text if available
+    has_pdf_1007 = False
+    if embedded_doc is None:
+        embedded_doc = root.find(".//EMBEDDED_FILE/DOCUMENT")
+
+    if embedded_doc is not None and embedded_doc.text and not is_explicit_1004_folder:
+        try:
+            pdf_bytes = base64.b64decode(embedded_doc.text.strip())
+            if fitz is not None:
+                pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+                for page in pdf:
+                    txt = (page.get_text() or "").upper()
+                    if "SINGLE FAMILY COMPARABLE RENT SCHEDULE" in txt or "FORM 1007" in txt or "FNMA 1007" in txt or "FRE 1000" in txt or "FANNIE MAE FORM 1007" in txt:
+                        has_pdf_1007 = True
+                        break
+                pdf.close()
+        except Exception:
+            pass
+
+    has_1007 = (is_explicit_1007_file or has_rent_comps or has_1007_form_tag or has_pdf_1007) and not is_explicit_1004_folder
 
     # Check 1025 (Small Residential Income Property / 2-4 Unit)
     if "1025" in ct or "SMALL RESIDENTIAL" in ct or "2-4 UNIT" in ct or "FRE72" in ct:
@@ -593,29 +639,33 @@ def extract_photos_from_xml(
         if is_form_report_page:
             continue
 
-        img_infos = page.get_image_info()
-        if not img_infos:
-            continue
+        # Check for Building Sketch / Floor Plan page first (often vector graphics in TOTAL/ACI)
+        is_sketch_page = (
+            any(k in raw_upper for k in ["BUILDING SKETCH", "FLOOR PLAN", "FLOORPLAN SKETCH", "SKETCH / FLOOR PLAN", "INSTAPLAN", "AREA CALCULATIONS"])
+            and not any(k in raw_upper for k in [
+                "UNIFORM RESIDENTIAL", "UAD DEFINITIONS", "DEFINITIONS ADDENDUM", 
+                "UNIFORM APPRAISAL DATASET", "SCOPE OF WORK", "APPRAISER'S CERTIFICATION", "MARKET CONDITIONS ADDENDUM"
+            ])
+        )
 
-        # Collect placed image rectangles (keep strips with height >= 6 for merging)
+        img_infos = page.get_image_info()
+
+        # Collect placed image rectangles
         rects = []
-        for item in img_infos:
+        for item in (img_infos or []):
             bbox = item.get("bbox")
             if bbox:
                 r = fitz.Rect(bbox)
                 if r.width >= 50 and r.height >= 6:
                     rects.append(r)
 
-        if not rects:
-            continue
-
-        # Merge horizontal strips (ACI / ClickFORMS style strip tiling)
+        # Merge horizontal strips ONLY if one of them is actually a thin slice (< 50 pt high)
         clusters = []
         rects.sort(key=lambda r: (round(r.x0 / 20), r.y0))
         for r in rects:
             merged = False
             for c in clusters:
-                if abs(c.x0 - r.x0) < 18 and abs(c.x1 - r.x1) < 18 and (r.y0 <= c.y1 + 12):
+                if abs(c.x0 - r.x0) < 18 and abs(c.x1 - r.x1) < 18 and (r.y0 <= c.y1 + 2) and (c.height < 50 or r.height < 50):
                     c.y1 = max(c.y1, r.y1)
                     merged = True
                     break
@@ -624,6 +674,27 @@ def extract_photos_from_xml(
 
         # Filter out thin dividers or tiny graphics (< 70 pt in width or < 60 pt in height)
         photo_frames = [c for c in clusters if (c.width >= 70 and c.height >= 60 and (c.width * c.height) >= 5000)]
+
+        # If it's a sketch page and has no large photo frames, render full page canvas
+        if is_sketch_page and len(photo_frames) == 0:
+            photo_count += 1
+            clip_rect = fitz.Rect(20, 30, page.rect.width - 20, page.rect.height - 35)
+            pix = page.get_pixmap(clip=clip_rect, dpi=dpi)
+            b64_enc = base64.b64encode(pix.tobytes("jpeg", jpg_quality=70)).decode("ascii")
+            photos.append({
+                "id": f"photo_{photo_count}",
+                "caption": "Building Sketch / Floor Plan",
+                "title": "Building Sketch",
+                "category": "Sketch",
+                "page": p_no,
+                "base64_preview": f"data:image/jpeg;base64,{b64_enc}",
+                "image_data": f"data:image/jpeg;base64,{b64_enc}",
+                "width": pix.width,
+                "height": pix.height,
+                "rect": {"x0": round(clip_rect.x0), "y0": round(clip_rect.y0), "x1": round(clip_rect.x1), "y1": round(clip_rect.y1)}
+            })
+            continue
+
         if not photo_frames:
             continue
 
@@ -637,7 +708,15 @@ def extract_photos_from_xml(
         photo_frames.sort(key=lambda r: (round(r.y0 / 50), r.x0))
 
         blocks = page.get_text("blocks")
-        body_blocks = [b for b in blocks if b[1] >= 82] # Ignore page top header metadata
+        # Ignore software vendor headers/footers in body_blocks
+        clean_blocks = []
+        for b in blocks:
+            txt = b[4].strip()
+            if any(ign in txt.lower() for ign in ["esign.alamode.com", "serial#", "serial:", "1-800-alamode", "produced using aci"]):
+                continue
+            clean_blocks.append(b)
+
+        body_blocks = [b for b in clean_blocks if b[1] >= 82]
 
         for frame in photo_frames:
             if photo_count >= max_photos:
@@ -659,7 +738,8 @@ def extract_photos_from_xml(
                         line = line.strip()
                         if line and not any(skip in line.lower() for skip in [
                             "appraised date", "appraised value", "sale date", "sale price",
-                            "form 1004", "total appraisal", "1-800-alamode", "page #", "aciweb", "int6ar"
+                            "form 1004", "total appraisal", "1-800-alamode", "page #", "aciweb", "int6ar",
+                            "esign.alamode.com", "serial#"
                         ]):
                             if re.match(r"^[\d,\.\$\s\/]+$", line) and len(line) < 15:
                                 continue
@@ -681,7 +761,7 @@ def extract_photos_from_xml(
                         for line in b[4].strip().split("\n"):
                             line = line.strip()
                             if line and len(line) < 40 and not any(skip in line.lower() for skip in [
-                                "aciweb", "int6ar", "page", "appraisal"
+                                "aciweb", "int6ar", "page", "appraisal", "esign.alamode", "serial#"
                             ]):
                                 if "UNIT" in line.upper():
                                     unit_str = line
@@ -702,7 +782,7 @@ def extract_photos_from_xml(
                     for b in above_blocks:
                         for line in b[4].strip().split("\n"):
                             line = line.strip()
-                            if line and len(line) < 40 and not any(skip in line.lower() for skip in ["aciweb", "page"]):
+                            if line and len(line) < 40 and not any(skip in line.lower() for skip in ["aciweb", "page", "esign.alamode", "serial#"]):
                                 best_label = line
                                 break
 
@@ -732,7 +812,7 @@ def extract_photos_from_xml(
             elif any(k in raw_upper for k in ["INTERIOR PHOTO"]):
                 category = "Interior"
 
-            if not best_label:
+            if not best_label or any(ign in best_label.lower() for ign in ["esign.alamode", "serial#"]):
                 if category == "Sketch":
                     best_label = "Building Floorplan Sketch"
                 elif category == "Map":
@@ -740,10 +820,20 @@ def extract_photos_from_xml(
                         if m_term in raw_upper:
                             best_label = m_term.title()
                             break
-                    if not best_label:
-                        best_label = "Map Exhibit"
+                    if not best_label or "serial#" in best_label.lower():
+                        best_label = "Location Map"
                 else:
                     best_label = f"{category} Photo"
+
+            # Check map title from top header of page (y < 82)
+            if category == "Map" and (best_label == "Map Photo" or "serial#" in best_label.lower()):
+                for b in clean_blocks:
+                    if b[1] < 82:
+                        for line in b[4].strip().split("\n"):
+                            line = line.strip()
+                            if any(k in line.upper() for k in ["LOCATION MAP", "AERIAL MAP", "PLAT MAP", "FLOOD MAP"]):
+                                best_label = line
+                                break
 
             # Render image if requested
             base64_preview = ""
@@ -763,7 +853,10 @@ def extract_photos_from_xml(
             if category in ["Comparable", "Rental"] or any(k in raw_upper for k in ["COMPARABLE PHOTO", "COMPARABLE PROPERTY", "FORM PICPIX"]):
                 comp_meta = extract_comp_photo_metadata(page, frame, body_blocks)
                 if comp_meta.get("comp_num"):
-                    category = "Comparable"
+                    if "RENTAL" in comp_meta.get("title", "").upper() or category == "Rental" or "RENTAL" in raw_upper:
+                        category = "Rental"
+                    else:
+                        category = "Comparable"
                     if not best_label or "Photo" in best_label:
                         best_label = comp_meta["title"]
 
@@ -808,10 +901,609 @@ def extract_photos_from_xml(
 
             photos.append(photo_item)
 
+    try:
+        doc.close()
+    except Exception:
+        pass
+
     return photos
 
+def _clean_line_text(l: str) -> str:
+    if not l:
+        return ""
+    l = l.strip()
+    if any(ign in l.lower() for ign in ["esign.alamode.com", "serial#", "serial:", "1-800-alamode", "produced using aci", "form 1007", "freddie mac"]):
+        return ""
+    return l
 
-def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True) -> Dict[str, Any]:
+
+def _parse_pdf_comp_column(lines: List[str]) -> Dict[str, Any]:
+    clean_lines = []
+    for l in lines:
+        cl = _clean_line_text(l)
+        if cl and not any(hdr in cl.upper() for hdr in [
+            "ITEM", "SUBJECT", "COMPARABLE NO", "DESCRIPTION", "+(   )$", "+(-) $",
+            "TOTAL BDRMS BATHS", "ABOVE GRADE", "NET ADJ", "INDICATED MONTHLY"
+        ]) and cl not in ["$", "+", "-", ""]:
+            clean_lines.append(cl)
+
+    c_dict = {
+        "Address": "",
+        "Proximity to Subject": "",
+        "Date Lease Begins": "",
+        "Date Lease Expires": "",
+        "Monthly Rental": "",
+        "Less: Utilities": "",
+        "Furniture": "",
+        "Adjusted Monthly Rent": "",
+        "Data Source": "",
+        "Rent": "",
+        "Concessions": "",
+        "Location/View": "",
+        "Location/View Adjustment": "",
+        "Design and Appeal": "",
+        "Design and Appeal Adjustment": "",
+        "Age": "",
+        "Age Adjustment": "",
+        "Condition": "",
+        "Condition Adjustment": "",
+        "Room Count Total": "",
+        "Room Count Total Adjustment": "",
+        "Room Count Bdrms": "",
+        "Room Count Bdrms Adjustment": "",
+        "Room Count Baths": "",
+        "Room Count Baths Adjustment": "",
+        "Gross Living Area": "",
+        "Gross Living Area Adjustment": "",
+        "Other (e.g., basement, etc.)": "",
+        "Other (e.g., basement, etc.) Adjustment": "",
+        "Other:": "",
+        "Net Adj. (total)": "",
+        "Indicated Monthly Market Rent": "",
+    }
+
+    addr_parts = []
+    idx = 0
+    while idx < len(clean_lines):
+        line = clean_lines[idx]
+        if re.search(r"\b\d+(?:\.\d+)?\s*(?:miles?|mi|blocks?)\s+[NSEW]{1,2}\b", line, re.I):
+            c_dict["Proximity to Subject"] = line
+            idx += 1
+            break
+        elif re.search(r"\b\d{1,2}/\d{1,2}/\d{4}\b", line):
+            break
+        else:
+            addr_parts.append(line)
+        idx += 1
+        if len(addr_parts) >= 2 and not c_dict["Proximity to Subject"] and idx < len(clean_lines) and re.search(r"\b\d+(?:\.\d+)?\s*(?:miles?|mi|blocks?)\s+[NSEW]{1,2}\b", clean_lines[idx], re.I):
+            c_dict["Proximity to Subject"] = clean_lines[idx]
+            idx += 1
+            break
+
+    clean_addr_parts = []
+    for p in addr_parts:
+        p_clean = re.sub(r'^(?:[123],\s*)+', '', p).strip()
+        if p_clean and p_clean not in ['1', '2', '3']:
+            clean_addr_parts.append(p_clean)
+    c_dict["Address"] = ", ".join(clean_addr_parts)
+
+    rem_lines = clean_lines[idx:]
+
+    dates = []
+    for l in rem_lines:
+        for m in re.finditer(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", l):
+            dates.append(m.group(1))
+    if len(dates) >= 2:
+        c_dict["Date Lease Begins"] = dates[0]
+        c_dict["Date Lease Expires"] = dates[1]
+    elif len(dates) == 1:
+        c_dict["Date Lease Begins"] = dates[0]
+
+    rents = []
+    for l in rem_lines:
+        for m in re.finditer(r"\b([0-9]{1,2},[0-9]{3}|[5-9][0-9]{2})\b", l):
+            val = m.group(1)
+            if not (val.startswith("202") or val.startswith("201")):
+                rents.append(val)
+
+    if rents:
+        c_dict["Monthly Rental"] = _clean_currency(rents[0])
+        if len(rents) > 1:
+            c_dict["Adjusted Monthly Rent"] = _clean_currency(rents[1])
+        else:
+            c_dict["Adjusted Monthly Rent"] = _clean_currency(rents[0])
+        if len(rents) >= 3:
+            c_dict["Indicated Monthly Market Rent"] = _clean_currency(rents[-1])
+        elif len(rents) == 2:
+            c_dict["Indicated Monthly Market Rent"] = _clean_currency(rents[-1])
+
+    src_parts = []
+    for l in rem_lines:
+        if any(term in l.upper() for term in ["MLS", "DOM", "ASSESSOR", "REALIST", "PUBLIC"]):
+            src_parts.append(l)
+    if src_parts:
+        c_dict["Data Source"] = "; ".join(src_parts)
+
+    for l in rem_lines:
+        if any(term in l.lower() for term in ["sec deposit", "security", "none"]):
+            c_dict["Concessions"] = l
+            break
+
+    loc_views = []
+    for l in rem_lines:
+        if re.match(r"^[NB];(?:Res|Wtr|Comm|Ind);?$", l, re.I):
+            loc_views.append(l)
+    if loc_views:
+        c_dict["Location/View"] = ", ".join(loc_views)
+
+    for l in rem_lines:
+        if any(d in l.upper() for d in ["RANCH", "TRADITIONAL", "COLONIAL", "CAPE", "CONTEMPORARY", "SPLIT"]):
+            c_dict["Design and Appeal"] = l
+            break
+
+    for l in rem_lines:
+        if re.match(r"^C[1-6]$", l) or l.upper() in ["AVERAGE", "GOOD", "FAIR"]:
+            if not c_dict["Condition"]:
+                c_dict["Condition"] = l
+        if re.match(r"^\d{1,3}$", l):
+            v_int = int(l)
+            if 15 <= v_int <= 150 and not c_dict["Age"]:
+                c_dict["Age"] = l
+
+    for i in range(len(rem_lines) - 2):
+        t_val = rem_lines[i]
+        br_val = rem_lines[i+1]
+        ba_val = rem_lines[i+2]
+        if re.match(r"^([3-9]|1[0-5])$", t_val) and re.match(r"^[1-8]$", br_val) and re.match(r"^[1-6](?:\.[0-5])?0?$", ba_val):
+            c_dict["Room Count Total"] = t_val
+            c_dict["Room Count Bdrms"] = br_val
+            c_dict["Room Count Baths"] = ba_val
+            break
+
+    for l in rem_lines:
+        m_gla = re.search(r"\b([1-9],[0-9]{3})\b", l)
+        if m_gla:
+            gla_val = m_gla.group(1)
+            if gla_val != c_dict["Monthly Rental"] and gla_val != c_dict["Indicated Monthly Market Rent"]:
+                c_dict["Gross Living Area"] = gla_val
+                break
+
+    for l in rem_lines:
+        if any(b in l.upper() for b in ["BSMT", "0SF", "SF", "WO"]):
+            if not c_dict["Other (e.g., basement, etc.)"]:
+                c_dict["Other (e.g., basement, etc.)"] = l
+                break
+
+    for l in rem_lines:
+        m_adj = re.findall(r"([+-]\s*[0-9,]+)", l)
+        for adj in m_adj:
+            adj_clean = adj.replace(" ", "")
+            try:
+                adj_f = abs(float(adj_clean.replace(",", "")))
+                if not c_dict["Gross Living Area Adjustment"] and adj_f >= 100:
+                    c_dict["Gross Living Area Adjustment"] = adj_clean
+                elif not c_dict["Room Count Total Adjustment"] and adj_f <= 100:
+                    c_dict["Room Count Total Adjustment"] = adj_clean
+            except Exception:
+                pass
+
+    for l in rem_lines:
+        m_net = re.search(r"\bNet\s+([0-9,]+(?:\.[0-9]+)?)\s*%\b", l, re.I)
+        if m_net and not c_dict["Net Adj. (total)"]:
+            c_dict["Net Adj. (total)"] = m_net.group(1)
+
+    if not c_dict["Net Adj. (total)"] and c_dict["Indicated Monthly Market Rent"] and c_dict["Adjusted Monthly Rent"]:
+        try:
+            r_ind = float(re.sub(r"[^\d.]", "", c_dict["Indicated Monthly Market Rent"]))
+            r_adj = float(re.sub(r"[^\d.]", "", c_dict["Adjusted Monthly Rent"]))
+            diff = r_ind - r_adj
+            prefix = "+" if diff > 0 else ("-" if diff < 0 else "")
+            c_dict["Net Adj. (total)"] = f"{prefix}{abs(int(diff)):,}" if diff.is_integer() else f"{prefix}{abs(diff):,.2f}"
+        except Exception:
+            pass
+
+    return c_dict
+
+
+def _parse_pdf_subject_column(lines: List[str]) -> Dict[str, Any]:
+    clean_lines = []
+    for l in lines:
+        cl = _clean_line_text(l)
+        if cl and not any(hdr in cl.upper() for hdr in [
+            "ITEM", "SUBJECT", "COMPARABLE NO", "DESCRIPTION",
+            "TOTAL BDRMS BATHS", "ABOVE GRADE"
+        ]) and cl not in ["$", "+", "-", ""]:
+            clean_lines.append(cl)
+
+    s_dict = {
+        "Address": "",
+        "Monthly Rental": "",
+        "Less: Utilities": "",
+        "Furniture": "",
+        "Adjusted Monthly Rent": "",
+        "Location/View": "",
+        "Design and Appeal": "",
+        "Age": "",
+        "Condition": "",
+        "Room Count Total": "",
+        "Room Count Bdrms": "",
+        "Room Count Baths": "",
+        "Gross Living Area": "",
+        "Other (e.g., basement, etc.)": "",
+        "Other:": "",
+    }
+
+    addr_parts = []
+    idx = 0
+    while idx < len(clean_lines):
+        l = clean_lines[idx]
+        if re.search(r"\b\d{1,2}/\d{1,2}/\d{4}\b", l) or re.search(r"^\$?[0-9,]+$", l):
+            break
+        elif not any(k in l.lower() for k in ["address", "date lease", "monthly rent", "if currently", "rented:"]):
+            addr_parts.append(l)
+        idx += 1
+        if len(addr_parts) >= 2:
+            break
+    s_dict["Address"] = ", ".join(addr_parts)
+
+    rem_lines = clean_lines[idx:]
+
+    rents = []
+    for l in rem_lines:
+        for m in re.finditer(r"\b([0-9]{1,2},[0-9]{3}|[5-9][0-9]{2})\b", l):
+            val = m.group(1)
+            if not (val.startswith("202") or val.startswith("201")):
+                rents.append(val)
+    if rents:
+        s_dict["Monthly Rental"] = _clean_currency(rents[0])
+        s_dict["Adjusted Monthly Rent"] = _clean_currency(rents[1]) if len(rents) > 1 else _clean_currency(rents[0])
+
+    loc_views = []
+    for l in rem_lines:
+        if re.match(r"^[NB];(?:Res|Wtr|Comm|Ind);?$", l, re.I):
+            loc_views.append(l)
+    if loc_views:
+        s_dict["Location/View"] = ", ".join(loc_views)
+
+    for l in rem_lines:
+        if any(d in l.upper() for d in ["RANCH", "TRADITIONAL", "COLONIAL", "CAPE", "CONTEMPORARY", "SPLIT"]):
+            s_dict["Design and Appeal"] = l
+            break
+
+    for l in rem_lines:
+        if re.match(r"^C[1-6]$", l) or l.upper() in ["AVERAGE", "GOOD", "FAIR"]:
+            if not s_dict["Condition"]:
+                s_dict["Condition"] = l
+        if re.match(r"^\d{1,3}$", l):
+            v_int = int(l)
+            if 15 <= v_int <= 150 and not s_dict["Age"]:
+                s_dict["Age"] = l
+
+    for i in range(len(rem_lines) - 2):
+        t_val = rem_lines[i]
+        br_val = rem_lines[i+1]
+        ba_val = rem_lines[i+2]
+        if re.match(r"^([3-9]|1[0-5])$", t_val) and re.match(r"^[1-8]$", br_val) and re.match(r"^[1-6](?:\.[0-5])?0?$", ba_val):
+            s_dict["Room Count Total"] = t_val
+            s_dict["Room Count Bdrms"] = br_val
+            s_dict["Room Count Baths"] = ba_val
+            break
+
+    for l in rem_lines:
+        m_gla = re.search(r"\b([1-9],[0-9]{3})\b", l)
+        if m_gla:
+            gla_val = m_gla.group(1)
+            if gla_val != s_dict["Monthly Rental"]:
+                s_dict["Gross Living Area"] = gla_val
+                break
+
+    for l in rem_lines:
+        if any(b in l.upper() for b in ["BSMT", "0SF", "SF", "WO"]):
+            if not s_dict["Other (e.g., basement, etc.)"]:
+                s_dict["Other (e.g., basement, etc.)"] = l
+        if any(o in l.upper() for o in ["GARAGE", "PORCH", "DECK", "A/C", "RR"]):
+            if not s_dict["Other:"]:
+                s_dict["Other:"] = l
+            else:
+                s_dict["Other:"] = f"{s_dict['Other:']}, {l}"
+
+    return s_dict
+
+
+def _extract_residential_rent_schedule_xml(root: ET.Element) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    rrs = root.find(".//RESIDENTIAL_RENT_SCHEDULE")
+    rentals = root.findall(".//RESIDENTIAL_RENTAL")
+    if rrs is None and not rentals:
+        return {}, {}
+    
+    subject_data = {}
+    subj_rr = None
+    for r in rentals:
+        if r.attrib.get("PropertySequenceIdentifier") == "0":
+            subj_rr = r
+            break
+            
+    mf_rentals = root.findall(".//MULTIFAMILY_RENTAL")
+    subj_mf = None
+    for m in mf_rentals:
+        if m.attrib.get("PropertySequenceIdentifier") == "0":
+            subj_mf = m
+            break
+            
+    if subj_rr is not None:
+        subject_data["Monthly Rental"] = _clean_currency(subj_rr.attrib.get("MonthlyRentAmount", ""))
+        subject_data["Less: Utilities"] = subj_rr.attrib.get("RentalMonthlyUtilitiesCostAmount", "")
+        subject_data["Furniture"] = subj_rr.attrib.get("MonthlyFurnitureRentAmount", "")
+        subject_data["Adjusted Monthly Rent"] = _clean_currency(subj_rr.attrib.get("ExpenseAdjustedMonthlyRentAmount", ""))
+        
+    comps_dict = {}
+    for r in rentals:
+        seq = r.attrib.get("PropertySequenceIdentifier", "")
+        if seq == "0" or not seq:
+            continue
+        try:
+            seq_num = int(seq)
+        except ValueError:
+            continue
+            
+        comp_key = f"COMPARABLE NO. {seq_num}"
+        c_dict = {
+            "Address": "",
+            "Proximity to Subject": "",
+            "Date Lease Begins": r.attrib.get("LeaseStartDate", ""),
+            "Date Lease Expires": r.attrib.get("LeaseExpirationDate", ""),
+            "Monthly Rental": _clean_currency(r.attrib.get("MonthlyRentAmount", "")),
+            "Less: Utilities": r.attrib.get("RentalMonthlyUtilitiesCostAmount", ""),
+            "Furniture": r.attrib.get("MonthlyFurnitureRentAmount", ""),
+            "Adjusted Monthly Rent": _clean_currency(r.attrib.get("ExpenseAdjustedMonthlyRentAmount", "")),
+            "Data Source": r.attrib.get("DataSourceDescription", ""),
+            "Rent": "",
+            "Concessions": "",
+            "Location/View": "",
+            "Location/View Adjustment": "",
+            "Design and Appeal": "",
+            "Design and Appeal Adjustment": "",
+            "Age": "",
+            "Age Adjustment": "",
+            "Condition": "",
+            "Condition Adjustment": "",
+            "Room Count Total": "",
+            "Room Count Total Adjustment": "",
+            "Room Count Bdrms": "",
+            "Room Count Bdrms Adjustment": "",
+            "Room Count Baths": "",
+            "Room Count Baths Adjustment": "",
+            "Gross Living Area": "",
+            "Gross Living Area Adjustment": "",
+            "Other (e.g., basement, etc.)": "",
+            "Other (e.g., basement, etc.) Adjustment": "",
+            "Other:": "",
+            "Net Adj. (total)": _clean_currency(r.attrib.get("RentTotalAdjustmentAmount", "")),
+            "Indicated Monthly Market Rent": _clean_currency(r.attrib.get("MarketAdjustedMonthlyRentAmount", "")),
+        }
+        pos = r.attrib.get("RentTotalAdjustmentPositiveIndicator", "")
+        if pos == "N" and c_dict["Net Adj. (total)"] and not c_dict["Net Adj. (total)"].startswith("-"):
+            c_dict["Net Adj. (total)"] = f"-{c_dict['Net Adj. (total)']}"
+            
+        loc = r.find("LOCATION")
+        if loc is not None:
+            st = loc.attrib.get("PropertyStreetAddress", "")
+            st2 = loc.attrib.get("PropertyStreetAddress2", "")
+            c_dict["Address"] = ", ".join([p for p in [st, st2] if p])
+            c_dict["Proximity to Subject"] = loc.attrib.get("ProximityToSubjectDescription", "")
+            
+        for adj in r.findall("RENT_ADJUSTMENT"):
+            t = adj.attrib.get("_Type", "")
+            desc = adj.attrib.get("_Description", "")
+            amt = _clean_currency(adj.attrib.get("_Amount", ""))
+            if t == "RentConcessions":
+                c_dict["Concessions"] = desc
+            elif t == "Location":
+                c_dict["Location/View"] = desc
+                if amt: c_dict["Location/View Adjustment"] = amt
+            elif t == "View" and not c_dict["Location/View"]:
+                c_dict["Location/View"] = desc
+            elif t == "Design":
+                c_dict["Design and Appeal"] = desc
+                if amt: c_dict["Design and Appeal Adjustment"] = amt
+            elif t == "Age":
+                c_dict["Age"] = desc
+                if amt: c_dict["Age Adjustment"] = amt
+            elif t == "Condition":
+                c_dict["Condition"] = desc
+                if amt: c_dict["Condition Adjustment"] = amt
+            elif t == "GrossLivingArea":
+                c_dict["Gross Living Area"] = desc
+                if amt: c_dict["Gross Living Area Adjustment"] = amt
+                
+        for rm in r.findall("ROOM_ADJUSTMENT"):
+            tot = rm.attrib.get("TotalRoomCount", "")
+            br = rm.attrib.get("TotalBedroomCount", "")
+            ba = rm.attrib.get("TotalBathroomCount", "")
+            amt = _clean_currency(rm.attrib.get("RoomAdjustmentAmount", ""))
+            if tot: c_dict["Room Count Total"] = tot
+            if br: c_dict["Room Count Bdrms"] = br
+            if ba: c_dict["Room Count Baths"] = ba
+            if amt: c_dict["Room Count Total Adjustment"] = amt
+
+        comps_dict[comp_key] = c_dict
+        
+    for m in mf_rentals:
+        seq = m.attrib.get("PropertySequenceIdentifier", "")
+        if seq == "0" or not seq:
+            continue
+        try:
+            seq_num = int(seq)
+        except ValueError:
+            continue
+        comp_key = f"COMPARABLE NO. {seq_num}"
+        if comp_key in comps_dict:
+            c = comps_dict[comp_key]
+            ru = m.find("RENTAL_UNIT")
+            if ru is not None:
+                if not c["Room Count Total"] and ru.attrib.get("TotalRoomCount"):
+                    c["Room Count Total"] = ru.attrib.get("TotalRoomCount")
+                if not c["Room Count Bdrms"] and ru.attrib.get("TotalBedroomCount"):
+                    c["Room Count Bdrms"] = ru.attrib.get("TotalBedroomCount")
+                if not c["Room Count Baths"] and ru.attrib.get("TotalBathroomCount"):
+                    c["Room Count Baths"] = ru.attrib.get("TotalBathroomCount")
+                if not c["Gross Living Area"] and ru.attrib.get("SquareFeetCount"):
+                    c["Gross Living Area"] = ru.attrib.get("SquareFeetCount")
+            for of in m.findall("OTHER_FEATURE_DESCRIPTION"):
+                desc = of.attrib.get("PropertyFeatureDescription", "").strip()
+                if desc:
+                    c["Other:"] = f"{c['Other:']}, {desc}".strip(", ")
+                    
+    if rrs is not None:
+        for ofa in rrs.findall("OTHER_FEATURE_ADJUSTMENT"):
+            p_seq = ofa.attrib.get("PropertySequenceIdentifier", "")
+            p_desc = ofa.attrib.get("PropertyFeatureDescription", "").strip()
+            p_amt = _clean_currency(ofa.attrib.get("PropertyFeatureAdjustmentAmount", ""))
+            if p_seq:
+                ck = f"COMPARABLE NO. {p_seq}"
+                if ck in comps_dict:
+                    if "BSMT" in p_desc.upper():
+                        comps_dict[ck]["Other (e.g., basement, etc.)"] = p_desc
+                        if p_amt: comps_dict[ck]["Other (e.g., basement, etc.) Adjustment"] = p_amt
+                    else:
+                        comps_dict[ck]["Other:"] = p_desc
+                        
+    return subject_data, comps_dict
+
+
+def _extract_1007_from_embedded_pdf(pdf_bytes: bytes, default_subject_addr: str = "") -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    if fitz is None or not pdf_bytes:
+        return {}, {}, {}
+        
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return {}, {}, {}
+        
+    page_1007 = None
+    for i, page in enumerate(doc):
+        t = page.get_text().upper()
+        if ("SINGLE FAMILY COMPARABLE RENT SCHEDULE" in t or "COMPARABLE RENT SCHEDULE" in t) and ("COMPARABLE NO" in t or "FINAL RECONCILIATION OF MARKET RENT" in t or "ESTIMATE THE MONTHLY MARKET RENT" in t):
+            page_1007 = page
+            break
+            
+    if page_1007 is None:
+        doc.close()
+        return {}, {}, {}
+
+    blocks = [b for b in page_1007.get_text("blocks") if b[6] == 0]
+    
+    y_comments_label = 9999.0
+    y_recon_label = 9999.0
+    y_est_label = 9999.0
+    y_appraiser_label = 9999.0
+    
+    for b in blocks:
+        txt = b[4].strip()
+        txt_lower = txt.lower()
+        if "comments on market data" in txt_lower and b[1] > 200:
+            y_comments_label = min(y_comments_label, b[1])
+        if "final reconciliation of market rent" in txt_lower and b[1] > 200:
+            y_recon_label = min(y_recon_label, b[1])
+        if "estimate the monthly market rent" in txt_lower and b[1] > 200:
+            y_est_label = min(y_est_label, b[1])
+        if ("appraiser(s)" in txt_lower or "appraiser:" in txt_lower) and b[1] > 400:
+            y_appraiser_label = min(y_appraiser_label, b[1])
+
+    market_data_comments = ""
+    final_reconciliation = ""
+    as_of_date = ""
+    est_monthly_rent = ""
+    
+    comments_blocks = []
+    recon_blocks = []
+    
+    for b in blocks:
+        x0, y0, x1, y1, text, bno, btype = b
+        lines = [_clean_line_text(l) for l in text.split("\n") if _clean_line_text(l)]
+        txt = " ".join(lines)
+        txt_l = txt.lower()
+        
+        if y_comments_label - 5 <= y0 < y_recon_label - 5:
+            clean_lines = [l for l in lines if not any(k in l.lower() for k in [
+                "comments on market data", "including the range", "single family properties",
+                "estimate of vacancy", "general trend", "support for the above", "rent concessions should be",
+                "net adj", "indicated monthly", "market rent $"
+            ]) and not (re.match(r"^[\d,\s+%\$-]+$", l) and len(l.split()) > 2)]
+            if clean_lines:
+                comments_blocks.append(" ".join(clean_lines))
+                
+        elif y_recon_label - 5 <= y0 < y_est_label - 5:
+            clean_lines = [l for l in lines if "final reconciliation of market rent" not in l.lower()]
+            if clean_lines:
+                recon_blocks.append(" ".join(clean_lines))
+                
+        elif y_est_label - 15 <= y0 < y_appraiser_label + 5:
+            if "estimate the monthly" not in txt_l:
+                for l in lines:
+                    m_date = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", l)
+                    if m_date and not as_of_date:
+                        as_of_date = m_date.group(1)
+                    m_amt = re.search(r"\b([0-9]{1,2},[0-9]{3}(?:\.\d{2})?|[0-9]{3,5})\b", l)
+                    if m_amt:
+                        val_str = m_amt.group(1)
+                        if val_str != as_of_date:
+                            est_monthly_rent = _clean_currency(val_str)
+                            
+    market_data_comments = " ".join(comments_blocks).strip()
+    final_reconciliation = " ".join(recon_blocks).strip()
+    
+    reconciliation_dict = {
+        "Comments on market data, including the range of rents for single family properties, an estimate of vacancy for single family rental properties, the general trend of rents and vacancy, and support for the above adjustments. (Rent concessions should be adjusted to the market, not to the subject property.)": market_data_comments,
+        "Final Reconciliation of Market Rent:": final_reconciliation,
+        "I (WE) ESTIMATE THE MONTHLY MARKET RENT OF THE SUBJECT AS OF": as_of_date,
+        "TO BE $": est_monthly_rent,
+    }
+
+    prox_blocks = [b for b in blocks if re.search(r'\b\d+(?:\.\d+)?\s*(?:miles?|mi|blocks?)\b', b[4], re.I) and b[1] < 300]
+    prox_blocks.sort(key=lambda b: b[0])
+    
+    if len(prox_blocks) >= 3:
+        x_c1, x_c2, x_c3 = prox_blocks[0][0], prox_blocks[1][0], prox_blocks[2][0]
+    else:
+        x_c1, x_c2, x_c3 = 195.0, 320.0, 445.0
+        
+    y_user_comments = 9999.0
+    for b in blocks:
+        if any(term in b[4].lower() for term in ["the comparables rentals provided", "market data suggests", "single family homes in this immediate"]) and b[1] > 200:
+            y_user_comments = min(y_user_comments, b[1])
+            
+    if y_user_comments == 9999.0:
+        y_user_comments = y_comments_label + 80 if y_comments_label != 9999.0 else 500.0
+
+    subj_blocks = [b for b in blocks if 50 <= b[0] < x_c1 - 5 and 40 < b[1] < y_user_comments]
+    c1_blocks = [b for b in blocks if x_c1 - 5 <= b[0] < x_c2 - 5 and 40 < b[1] < y_user_comments]
+    c2_blocks = [b for b in blocks if x_c2 - 5 <= b[0] < x_c3 - 5 and 40 < b[1] < y_user_comments]
+    c3_blocks = [b for b in blocks if x_c3 - 5 <= b[0] < 600 and 40 < b[1] < y_user_comments]
+    
+    def get_lines(blist):
+        blist.sort(key=lambda b: b[1])
+        res = []
+        for b in blist:
+            for l in b[4].split('\n'):
+                if l.strip(): res.append(l.strip())
+        return res
+        
+    pdf_subject = _parse_pdf_subject_column(get_lines(subj_blocks))
+    if not pdf_subject.get("Address") and default_subject_addr:
+        pdf_subject["Address"] = default_subject_addr
+        
+    pdf_comps = {
+        "COMPARABLE NO. 1": _parse_pdf_comp_column(get_lines(c1_blocks)),
+        "COMPARABLE NO. 2": _parse_pdf_comp_column(get_lines(c2_blocks)),
+        "COMPARABLE NO. 3": _parse_pdf_comp_column(get_lines(c3_blocks)),
+    }
+    
+    doc.close()
+    return reconciliation_dict, pdf_subject, pdf_comps
+
+
+def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True, original_filename: str = "") -> Dict[str, Any]:
     """
     Parses a MISMO 2.6 XML appraisal file and returns the full structured fields dictionary.
     All data is extracted dynamically from the XML DOM and attributes.
@@ -848,7 +1540,14 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
         signed_date = _format_date(report.attrib.get("AppraiserReportSignedDate", ""))
         purpose = report.attrib.get("AppraisalPurposeType", "")
 
-    form_type = _detect_form_type_from_xml(root)
+    file_path_str = ""
+    if isinstance(xml_path_or_bytes, (str, os.PathLike)):
+        file_path_str = str(xml_path_or_bytes)
+    if original_filename and (not file_path_str or "tmp" in file_path_str.lower()):
+        file_path_str = original_filename
+
+    embedded_doc_elem = root.find(".//EMBEDDED_FILE/DOCUMENT")
+    form_type = _detect_form_type_from_xml(root, file_path_or_name=file_path_str, embedded_doc=embedded_doc_elem)
 
     # Appraiser & Parties
     appraiser_name = ""
@@ -2069,23 +2768,66 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
             "Data Source(s)": r_src,
         }
 
-    # Embedded PDF Check
+    # Embedded PDF Check & Rent Schedule 1007 Extraction
     extracted_photos = []
     has_embedded_pdf = False
+    pdf_bytes = None
     embedded_doc = root.find(".//EMBEDDED_FILE/DOCUMENT")
+    if embedded_doc is None:
+        embedded_doc = root.find(".//DOCUMENT")
     if embedded_doc is not None and embedded_doc.text:
         has_embedded_pdf = True
-        if fitz is not None:
-            try:
-                pdf_bytes = base64.b64decode(embedded_doc.text.strip())
+        try:
+            pdf_bytes = base64.b64decode(embedded_doc.text.strip())
+            if fitz is not None:
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 extracted_photos.append({
                     "category": "Embedded PDF",
                     "page": 1,
                     "caption": f"Embedded PDF ({len(doc)} pages) detected in XML"
                 })
-            except Exception:
-                pass
+                doc.close()
+        except Exception:
+            pdf_bytes = None
+
+    # Form 1007 (Single Family Rent Schedule) extraction from XML DOM & Embedded PDF
+    xml_subj, xml_comps = _extract_residential_rent_schedule_xml(root)
+    pdf_recon, pdf_subj, pdf_comps = ({}, {}, {})
+    if pdf_bytes is not None and fitz is not None:
+        try:
+            pdf_recon, pdf_subj, pdf_comps = _extract_1007_from_embedded_pdf(pdf_bytes, default_subject_addr=full_addr or prop_addr)
+        except Exception:
+            pass
+
+    # Merge Subject rental data into subject_rent_schedule
+    merged_subj_rental = dict(pdf_subj)
+    for k, v in xml_subj.items():
+        if v:
+            merged_subj_rental[k] = v
+
+    # Guard: if Monthly Rental equals Gross Living Area, it's owner-occupied and GLA leaked into rent
+    if merged_subj_rental.get("Monthly Rental") and gba and merged_subj_rental.get("Monthly Rental") == gba:
+        merged_subj_rental["Monthly Rental"] = ""
+
+    for k, v in merged_subj_rental.items():
+        if v:
+            subject_rent_schedule[k] = v
+
+    # Merge Comps into comparable_rental_data
+    for i in range(1, 4):
+        ck = f"COMPARABLE NO. {i}"
+        xc = xml_comps.get(ck, {})
+        pc = pdf_comps.get(ck, {})
+        comp_m = dict(pc)
+        for k, v in xc.items():
+            if v:
+                comp_m[k] = v
+        if any(comp_m.values()):
+            comparable_rental_data[ck] = comp_m
+            comparable_rental_data[f"Rental {i}"] = comp_m
+            comparable_rental_data[f"COMPARABLE Rental No #{i}"] = comp_m
+
+    rent_reconciliation_section = pdf_recon or {}
 
     # PUD & HOA
     pud_indicator = ""
@@ -3005,6 +3747,9 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
         if m_inc_comm:
             income_summary = m_inc_comm.group(0).strip()
 
+    if not income_rent and rent_reconciliation_section.get("TO BE $"):
+        income_rent = rent_reconciliation_section["TO BE $"]
+
     income_approach_section = {
         "Estimated Monthly Market Rent $": income_rent,
         "Estimated Monthly Market Rent": income_rent,
@@ -3407,6 +4152,11 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
     if not clean_subject.get("County"):
         clean_subject["County"] = prop_county
 
+    # Merge Form 1007 Subject rental characteristics into clean_subject
+    for k, v in merged_subj_rental.items():
+        if v and not clean_subject.get(k):
+            clean_subject[k] = v
+
     sales_grid.update(info_of_sales_section)
     merged_info_of_sales = {**sales_grid, **info_of_sales_section}
 
@@ -3487,12 +4237,18 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
         "CONDO_FORECLOSURE": condo_foreclosure_section,
         "CERTIFICATION": certification_section,
         "SUBJECT_RENT_SCHEDULE": subject_rent_schedule,
+        "Subject Rent Schedule": subject_rent_schedule,
         "COMPARABLE_RENTAL_DATA": comparable_rental_data,
+        "Comparable Rental Data": comparable_rental_data,
+        "RENT_SCHEDULE_RECONCILIATION": rent_reconciliation_section,
+        "Rent Schedule Reconciliation": rent_reconciliation_section,
+        "RENT_SCHEDULE_GRID": comparable_rental_data,
+        "Rent Schedule Grid": comparable_rental_data,
         "EXTRACTED_PHOTOS": extracted_photos,
     }
 
     # Flatten category fields into root fields so data[field] is directly available to UI
-    for cat_dict in [clean_subject, contract_section, neighborhood_section, site_section, improvements_section, reconciliation_section, income_approach_section, cost_approach_section, pud_info_section, market_conditions_section, condo_coop_section, condo_foreclosure_section, certification_section, info_of_sales_section]:
+    for cat_dict in [clean_subject, contract_section, neighborhood_section, site_section, improvements_section, reconciliation_section, income_approach_section, cost_approach_section, pud_info_section, market_conditions_section, condo_coop_section, condo_foreclosure_section, certification_section, info_of_sales_section, rent_reconciliation_section]:
         for k, v in cat_dict.items():
             if k not in fields:
                 fields[k] = v
@@ -3502,14 +4258,17 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
         if comp_name not in ("Subject", "SUBJECT") and comp_name not in fields:
             fields[comp_name] = comp_data
 
-    # Map individual rentals for Form1025
+    # Map individual rentals for Form1025 and 1007
     for rent_name, rent_data in comparable_rental_data.items():
         if rent_name not in fields:
             fields[rent_name] = rent_data
 
+    has_1007 = bool("1007" in form_type or "1025" in form_type)
+
     # Clean structured appraisal data dictionary (single clean section hierarchy where Subject and Sales Grid are distinct)
     clean_data: Dict[str, Any] = {
         "Form Type": form_type,
+        "has_1007": has_1007,
         "has_1004mc": has_1004mc,
         "1004MC Addendum": mc_present_str,
         "Subject": clean_subject,
@@ -3522,8 +4281,10 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
     }
     if cost_approach_section and any(cost_approach_section.values()):
         clean_data["Cost Approach"] = cost_approach_section
+        clean_data["COST_APPROACH"] = cost_approach_section
     if income_approach_section and any(income_approach_section.values()):
         clean_data["Income Approach"] = income_approach_section
+        clean_data["INCOME_APPROACH"] = income_approach_section
     if pud_info_section and any(pud_info_section.values()):
         clean_data["PUD Information"] = pud_info_section
     if market_conditions_section and any(market_conditions_section.values()):
@@ -3532,20 +4293,32 @@ def extract_fields_from_xml(xml_path_or_bytes: Any, extract_images: bool = True)
         clean_data["Condo / Coop Projects"] = condo_coop_section
     if condo_foreclosure_section and any(condo_foreclosure_section.values()):
         clean_data["Condo Foreclosure"] = condo_foreclosure_section
+    if rent_reconciliation_section and any(rent_reconciliation_section.values()):
+        clean_data["Rent Schedule Reconciliation"] = rent_reconciliation_section
+        clean_data["RENT_SCHEDULE_RECONCILIATION"] = rent_reconciliation_section
     if subject_rent_schedule and any(subject_rent_schedule.values()):
         clean_data["Subject Rent Schedule"] = subject_rent_schedule
+        clean_data["SUBJECT_RENT_SCHEDULE"] = subject_rent_schedule
+        clean_data["Rent Schedule"] = subject_rent_schedule
     if comparable_rental_data and any(comparable_rental_data.values()):
         clean_data["Comparable Rental Data"] = comparable_rental_data
+        clean_data["COMPARABLE_RENTAL_DATA"] = comparable_rental_data
+        clean_data["Comparable Rents"] = comparable_rental_data
+        clean_data["Rent Schedule Grid"] = comparable_rental_data
     if certification_section and any(certification_section.values()):
         clean_data["Certification"] = certification_section
 
     if extracted_photos:
         clean_data["EXTRACTED_PHOTOS"] = extracted_photos
         clean_data["extracted_photos"] = extracted_photos
+        fields["EXTRACTED_PHOTOS"] = extracted_photos
+        fields["extracted_photos"] = extracted_photos
 
     return {
         "status": "success",
         "form_type": form_type,
+        "Form Type": form_type,
+        "has_1007": has_1007,
         "has_1004mc": has_1004mc,
         "1004mc_presence": mc_present_str,
         "fields": fields,

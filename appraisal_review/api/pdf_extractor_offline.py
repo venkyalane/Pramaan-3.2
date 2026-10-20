@@ -6079,8 +6079,20 @@ def extract_fields_from_pdf_offline(pdf_path):
                             unified_fields[f"Rental {r_num}"] = rent_v
 
             # Build clean, human-readable section dictionary where Subject and Sales Grid are distinct
+            detected_form_type = data.get("Form Type") or data.get("form_type") or data.get("SUBJECT", {}).get("Form Type") or "1004"
+            if clean_data.get("COMPARABLE_RENTAL_DATA") and detected_form_type == "1004":
+                detected_form_type = "1004 + 1007"
+            has_1007_flag = bool("1007" in detected_form_type or "1025" in detected_form_type or clean_data.get("COMPARABLE_RENTAL_DATA"))
+
+            unified_fields["Form Type"] = detected_form_type
+            unified_fields["form_type"] = detected_form_type
+            unified_fields["has_1007"] = has_1007_flag
+
             clean_section_data = {
-                "Form Type": "1004",
+                "Form Type": detected_form_type,
+                "has_1007": has_1007_flag,
+                "has_1004mc": has_1004mc_pdf,
+                "1004MC Addendum": mc_present_pdf,
                 "Subject": subj_section,
                 "Contract": clean_data.get("CONTRACT") or {},
                 "Neighborhood": clean_data.get("NEIGHBORHOOD") or {},
@@ -6103,8 +6115,15 @@ def extract_fields_from_pdf_offline(pdf_path):
                 clean_section_data["Condo Foreclosure"] = clean_data["CONDO_FORECLOSURE"]
             if clean_data.get("CERTIFICATION") and any(clean_data["CERTIFICATION"].values()):
                 clean_section_data["Certification"] = clean_data["CERTIFICATION"]
+            if clean_data.get("RENT_SCHEDULE_RECONCILIATION") and any(clean_data["RENT_SCHEDULE_RECONCILIATION"].values()):
+                clean_section_data["Rent Schedule Reconciliation"] = clean_data["RENT_SCHEDULE_RECONCILIATION"]
+            if clean_data.get("SUBJECT_RENT_SCHEDULE") and any(clean_data["SUBJECT_RENT_SCHEDULE"].values()):
+                clean_section_data["Subject Rent Schedule"] = clean_data["SUBJECT_RENT_SCHEDULE"]
             if clean_data.get("COMPARABLE_RENTAL_DATA") and any(clean_data["COMPARABLE_RENTAL_DATA"].values()):
                 clean_section_data["Comparable Rental Data"] = clean_data["COMPARABLE_RENTAL_DATA"]
+            if extracted_photos:
+                clean_section_data["EXTRACTED_PHOTOS"] = extracted_photos
+                clean_section_data["extracted_photos"] = extracted_photos
 
             raw_json_str = json.dumps(unified_fields, indent=2)
             unified_fields["raw"] = raw_json_str

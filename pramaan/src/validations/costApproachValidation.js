@@ -1,68 +1,76 @@
 export const checkCostNew = (field, text) => {
-    if (field !== 'ESTIMATED/REPRODUCTION / REPLACEMENT COST NEW') return null;
+    const costNewFields = [
+        'ESTIMATED/REPRODUCTION / REPLACEMENT COST NEW',
+        'ESTIMATED COST NEW TYPE',
+        'Estimated',
+        'Cost Type'
+    ];
+    if (!costNewFields.includes(field)) return null;
 
     const value = String(text || '').trim().toLowerCase();
     if (!value) {
-        return { isError: true, message: "'ESTIMATED/REPRODUCTION / REPLACEMENT COST NEW' cannot be blank. One option must be selected." };
+        return { isError: true, skipBlankFilter: true, isMandatoryBlank: true, message: "'ESTIMATED COST NEW TYPE' cannot be blank. One option must be selected." };
     }
 
     const hasReproduction = value.includes('reproduction');
     const hasReplacement = value.includes('replacement');
 
     if (hasReproduction && hasReplacement) {
-        return { isError: true, message: "Only one of 'Reproduction' or 'Replacement' can be selected." };
+        return { isError: true, skipBlankFilter: true, message: "Only one of 'Reproduction' or 'Replacement' can be selected." };
     }
 
     if (!hasReproduction && !hasReplacement) {
-        return { isError: true, message: "Either 'Reproduction' or 'Replacement' must be selected." };
+        return { isError: true, skipBlankFilter: true, message: "Either 'Reproduction' or 'Replacement' must be selected." };
     }
 
     return { isMatch: true };
 };
 
 export const checkSourceOfCostData = (field, text) => {
-    if (field !== 'Source of cost data') return null;
+    const sourceFields = ['Source of cost data', 'Source of Cost Data', 'Cost Data Source'];
+    if (!sourceFields.includes(field)) return null;
     if (!text || String(text).trim() === '') {
-        return { isError: true, message: "'Source of cost data' cannot be blank." };
+        return { isError: true, skipBlankFilter: true, isMandatoryBlank: true, message: "'Source of Cost Data' cannot be blank." };
     }
     return { isMatch: true };
 };
 
 export const checkIndicatedValueByCostApproach = (field, text, data) => {
-    if (field !== 'Indicated Value By Cost Approach......................................................=$') return null;
-    const formType = String(data?.formType || data?.['From Type'] || data?.['Form Type'] || '').trim();
-    if (formType === '1073') {
-        return { isMatch: true };
-    }
+    const indFields = [
+        'Indicated Value By Cost Approach......................................................=$',
+        'Indicated Value by Cost Approach',
+        'Cost Approach Indicated Value',
+        'INDICATED VALUE BY COST APPROACH'
+    ];
+    if (!indFields.includes(field)) return null;
+
     const value = String(text || '').trim();
-    const comments = String(
-        data?.['Comments on Cost Approach (gross living area calculations, depreciation, etc.)'] || 
-        data?.COST_APPROACH?.['Comments on Cost Approach (gross living area calculations, depreciation, etc.)'] || 
-        data?.RECONCILIATION?.['Cost Approach (if developed) Comment'] || ''
-    ).toLowerCase();
-
-    const hasNotDevelopedComment = comments.includes('why cost approach cannot be developed') || 
-        (comments.includes('cost approach') && (comments.includes('not') || comments.includes('omitted') || comments.includes('unreliable') || comments.includes('less reliable') || comments.includes('applicable') || comments.includes('developed') || comments.includes('analyzed')));
-
-    if ((!value || value === '0') && !hasNotDevelopedComment) {
-        return { isError: true, message: "If 'Indicated Value by Cost Approach' is blank, a comment explaining why it was not developed is required." };
+    if (!value || value === '0') {
+        return { isError: true, skipBlankFilter: true, isMandatoryBlank: true, message: "'INDICATED VALUE BY COST APPROACH' is mandatory and cannot be blank." };
     }
     return { isMatch: true };
 };
 
 export const checkCostApproachFieldsNotBlank = (field, text) => {
+    const mandatoryCostFields = [
+        "Estimated", "Cost Type", "ESTIMATED COST NEW TYPE", "ESTIMATED/REPRODUCTION / REPLACEMENT COST NEW",
+        "Source of cost data", "Source of Cost Data", "Cost Data Source",
+        "Effective date of cost data ", "Effective date of cost data", "Effective Date", "Effective Date of Cost Data",
+        "Estimated Remaining Economic Life (HUD and VA only)", "Remaining Economic Life",
+        "OPINION OF SITE VALUE = $ ................................................", "Opinion of Site Value", "OPINION OF SITE VALUE",
+        "Indicated Value By Cost Approach......................................................=$", "Indicated Value by Cost Approach", "Cost Approach Indicated Value", "INDICATED VALUE BY COST APPROACH"
+    ];
+
     const fieldsToCheck = [
-        "Estimated", "Source of cost data", "Quality rating from cost service ",
-        "Effective date of cost data ", "Comments on Cost Approach (gross living area calculations, depreciation, etc.)",
-        "OPINION OF SITE VALUE = $ ................................................", "Dwelling", "Garage/Carport ",
-        " Total Estimate of Cost-New  = $ ...................", "Depreciation ",
+        ...mandatoryCostFields,
+        "Quality rating from cost service ",
+        "Comments on Cost Approach (gross living area calculations, depreciation, etc.)",
+        "Dwelling", "Garage/Carport ",
+        " Total Estimate of Cost-New  = $ ...................", "Total Estimate of Cost-New = $ ...................", "Depreciation ",
         "Depreciated Cost of Improvements......................................................=$ ",
         "“As-is” Value of Site Improvements......................................................=$",
-        "Indicated Value By Cost Approach......................................................=$",
-        "Indicated Value by Cost Approach",
         "Depreciated Cost of Dwellings",
         "As Is Value of Site Improvements",
-        "Opinion of Site Value",
         "Above Grade Finished Area",
         "Cost Per Square Foot",
         "Depreciated Cost",
@@ -70,7 +78,6 @@ export const checkCostApproachFieldsNotBlank = (field, text) => {
         "Functional Depreciation",
         "External Depreciation",
         "Total Depreciation",
-        "Remaining Economic Life",
         "Effective Age",
         "Site Improvement Description",
         "Site Improvement Amount",
@@ -87,17 +94,15 @@ export const checkCostApproachFieldsNotBlank = (field, text) => {
         "Commentary on Effective Age",
         "Reconciliation of Site Value",
         "General Description",
-        "Cost Type",
-        "Cost Data Source",
         "Quality Rating",
-        "Effective Date",
         "Cost Method",
         "Depreciation Method",
         "Cost Approach Commentary",
         "Cost Approach Exhibits"
     ];
     if (fieldsToCheck.includes(field) && (!text || String(text).trim() === '')) {
-        return { isError: true, message: `'${field}' should not be blank.` };
+        const isMandatory = mandatoryCostFields.includes(field);
+        return { isError: true, skipBlankFilter: true, isMandatoryBlank: isMandatory, message: `'${field}' ${isMandatory ? 'is mandatory and ' : ''}should not be blank.` };
     }
     return null;
 };

@@ -1,6 +1,8 @@
+import json
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import AppraisalReport, ContactMessage
+from .mandatory_validation import validate_appraisal_mandatory_fields
 
 class AppraisalReportSerializer(serializers.ModelSerializer):
     """
@@ -10,6 +12,21 @@ class AppraisalReportSerializer(serializers.ModelSerializer):
         model = AppraisalReport
         fields = ['id', 'user_name', 'file_name', 'report_data', 'validation_log', 'created_at', 'status']
         read_only_fields = ['id', 'created_at']
+
+    def validate(self, attrs):
+        report_data = attrs.get('report_data')
+        if report_data:
+            if isinstance(report_data, str):
+                try:
+                    report_data = json.loads(report_data)
+                except Exception:
+                    report_data = {}
+            if isinstance(report_data, dict):
+                errors = validate_appraisal_mandatory_fields(report_data)
+                if errors:
+                    err_dict = {e['field']: e['message'] for e in errors}
+                    raise serializers.ValidationError(err_dict)
+        return attrs
 
 class AppraisalReportListSerializer(serializers.ModelSerializer):
     """

@@ -202,14 +202,20 @@ export const checkArea = (field, text) => {
     return { isMatch: true };
 };
 export const checkYesNoWithComment = (field, text, data, fieldConfig) => {
-    if (field !== fieldConfig.name) return null;
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const isFieldMatch = (field === fieldConfig.name) ||
+        (norm(field) === norm(fieldConfig.name)) ||
+        (norm(field).includes('utilitiesandoffsiteimprovements') && norm(fieldConfig.name).includes('utilitiesandoffsiteimprovements'));
+    if (!isFieldMatch) return null;
 
     const value = String(text || '').trim();
 
     if (!value) {
         return {
             isError: true,
-            message: `'${field}' should not be blank.`,
+            skipBlankFilter: true,
+            isMandatoryBlank: true,
+            message: `'${field}' cannot be blank. Selection is required.`,
         };
     }
 
@@ -232,6 +238,7 @@ export const checkYesNoWithComment = (field, text, data, fieldConfig) => {
         if (!description) {
             return {
                 isError: true,
+                skipBlankFilter: true,
                 message: `'${field}' requires a description when answered '${unwanted}'.`,
             };
         }
@@ -241,6 +248,7 @@ export const checkYesNoWithComment = (field, text, data, fieldConfig) => {
 
     return {
         isError: true,
+        skipBlankFilter: true,
         message: `'${field}' should be '${wanted}' or '${unwanted}' with description.`,
     };
 };

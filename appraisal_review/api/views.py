@@ -17,6 +17,7 @@ from django.contrib.auth.decorators import login_required
 from rest_framework.views import APIView
 from .models import AppraisalReport, ContactMessage
 from .serializers import AppraisalReportSerializer, ContactMessageSerializer, RegisterSerializer, AppraisalReportListSerializer
+from .mandatory_validation import validate_appraisal_mandatory_fields
 
 from .pdf_extractor import (
     extract_fields_from_pdf,
@@ -269,6 +270,29 @@ class SaveReportView(APIView):
                     {"detail": "No report data found to save."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            import json
+            if isinstance(report_data, str):
+                try:
+                    parsed_report_data = json.loads(report_data)
+                except Exception:
+                    parsed_report_data = {}
+            elif isinstance(report_data, dict):
+                parsed_report_data = report_data
+            else:
+                parsed_report_data = {}
+
+            form_type_val = data.get('form_type') or parsed_report_data.get('form_type') or parsed_report_data.get('Form Type') or parsed_report_data.get('From Type')
+            validation_errors = validate_appraisal_mandatory_fields(parsed_report_data, form_type=form_type_val)
+            if validation_errors:
+                return Response(
+                    {
+                        "detail": f"Validation Error: {len(validation_errors)} mandatory field(s) cannot be blank before submission.",
+                        "errors": validation_errors
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             AppraisalReport.objects.create(report_data=report_data, user_name=user_name, file_name=file_name, validation_log=validation_log, status=status_val)
             return Response(
                 {"message": "Report data saved successfully!"},
@@ -798,7 +822,7 @@ def extract_pdf(request):
 
             # 6. XML Field Extraction (When not a specialized check request)
             if is_xml:
-                xml_result = extract_fields_from_xml(tmp_path)
+                xml_result = extract_fields_from_xml(tmp_path, original_filename=file.name if file else "")
                 if xml_result.get("status") == "success":
                     return Response(xml_result)
                 return Response(

@@ -2,6 +2,9 @@ from typing import Any, Dict
 from django.db import models
 from django.contrib.auth.models import User
 import uuid
+import json
+from django.core.exceptions import ValidationError
+from .mandatory_validation import validate_appraisal_mandatory_fields
 
 class UploadedFile(models.Model):
     """
@@ -50,6 +53,27 @@ class AppraisalReport(models.Model):
             return f"{base_str} created at {created_time}"
         except Exception:
             return f"Report ID: {self.id}"
+
+    def clean(self):
+        super().clean()
+        if self.report_data:
+            report_dict = self.report_data
+            if isinstance(report_dict, str):
+                try:
+                    report_dict = json.loads(report_dict)
+                except Exception:
+                    report_dict = {}
+            if isinstance(report_dict, dict):
+                validation_errors = validate_appraisal_mandatory_fields(report_dict)
+                if validation_errors:
+                    err_dict = {
+                        err['field']: err['message'] for err in validation_errors
+                    }
+                    raise ValidationError(err_dict)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ['-created_at']

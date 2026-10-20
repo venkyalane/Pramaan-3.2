@@ -117,3 +117,147 @@ class FastAppFilterTests(unittest.TestCase):
         self.assertEqual(find_date_column_index([], mock_rows), 2)
 
 
+class MandatoryValidationTests(unittest.TestCase):
+    def get_valid_data(self):
+        return {
+            "Subject": {
+                "City": "Los Angeles",
+                "Appraiser Fee": "$450",
+                "Zip Code": "90001",
+            },
+            "SITE": {
+                "Are the utilities and off-site improvements typical for the market area?": "Yes"
+            },
+            "NEIGHBORHOOD": {
+                "There are ____ comparable properties currently offered for sale in the subject neighborhood ranging in price from $___ to $___":
+                    "There are 5 comparable properties currently offered for sale in the subject neighborhood ranging in price from $400,000 to $550,000",
+                "There are ___ comparable sales in the subject neighborhood within the past twelve months ranging in sale price from $___ to $____":
+                    "There are 12 comparable sales in the subject neighborhood within the past twelve months ranging in sale price from $380,000 to $560,000"
+            },
+            "COST_APPROACH": {
+                "ESTIMATED COST NEW TYPE": "Replacement",
+                "Source of Cost Data": "Marshall & Swift",
+                "Effective Date": "10/2026",
+                "Remaining Economic Life": "55 years",
+                "OPINION OF SITE VALUE": "$150,000",
+                "INDICATED VALUE BY COST APPROACH": "$520,000"
+            }
+        }
+
+    def test_valid_data_passes(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        errors = validate_appraisal_mandatory_fields(data)
+        self.assertEqual(len(errors), 0)
+
+    def test_missing_general_fields_fails(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        data["Subject"]["City"] = ""
+        data["Subject"]["Appraiser Fee"] = ""
+        data["Subject"]["Zip Code"] = ""
+        data["SITE"]["Are the utilities and off-site improvements typical for the market area?"] = ""
+
+        errors = validate_appraisal_mandatory_fields(data)
+        fields_with_errors = [e["field"] for e in errors]
+        self.assertIn("City", fields_with_errors)
+        self.assertIn("Appraiser Fee", fields_with_errors)
+        self.assertIn("Zip Code", fields_with_errors)
+        self.assertIn("Are the utilities and off-site improvements typical for the market area?", fields_with_errors)
+
+    def test_text_block_fields_incomplete_fails(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        data["NEIGHBORHOOD"]["There are ____ comparable properties currently offered for sale in the subject neighborhood ranging in price from $___ to $___"] = \
+            "There are ____ comparable properties currently offered for sale in the subject neighborhood ranging in price from $400,000 to $___"
+
+        errors = validate_appraisal_mandatory_fields(data)
+        fields_with_errors = [e["field"] for e in errors]
+        self.assertIn("There are ____ comparable properties currently offered for sale in the subject neighborhood ranging in price from $___ to $___", fields_with_errors)
+
+    def test_missing_cost_approach_fields_fails(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        data["COST_APPROACH"] = {}
+
+        errors = validate_appraisal_mandatory_fields(data)
+        fields_with_errors = [e["field"] for e in errors]
+        self.assertIn("ESTIMATED COST NEW TYPE", fields_with_errors)
+        self.assertIn("Source of Cost Data", fields_with_errors)
+        self.assertIn("Effective Date", fields_with_errors)
+        self.assertIn("Remaining Economic Life", fields_with_errors)
+        self.assertIn("OPINION OF SITE VALUE", fields_with_errors)
+        self.assertIn("INDICATED VALUE BY COST APPROACH", fields_with_errors)
+
+    def test_conditional_income_approach_required_when_1007_present(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        data["form_type"] = "1004 + 1007"
+        # No income approach data provided yet
+        errors = validate_appraisal_mandatory_fields(data)
+        fields_with_errors = [e["field"] for e in errors]
+        self.assertIn("Estimated Monthly Market Rent $", fields_with_errors)
+        self.assertIn("Gross Rent Multiplier (GRM)", fields_with_errors)
+        self.assertIn("Indicated Value by Income Approach", fields_with_errors)
+
+        # Now supply income approach fields
+        data["INCOME_APPROACH"] = {
+            "Estimated Monthly Market Rent $": "$2,800",
+            "Gross Rent Multiplier (GRM)": "180",
+            "Indicated Value by Income Approach": "$504,000"
+        }
+        errors2 = validate_appraisal_mandatory_fields(data)
+        self.assertEqual(len(errors2), 0)
+
+    def test_income_approach_not_required_when_no_1007(self):
+        from api.mandatory_validation import validate_appraisal_mandatory_fields
+        data = self.get_valid_data()
+        data["form_type"] = "1004"
+        errors = validate_appraisal_mandatory_fields(data)
+        self.assertEqual(len(errors), 0)
+
+    def test_model_clean_raises_validation_error(self):
+        from django.core.exceptions import ValidationError
+        from api.models import AppraisalReport
+        bad_data = {"Subject": {}}
+        report = AppraisalReport(report_data=bad_data)
+        with self.assertRaises(ValidationError):
+            report.clean()
+
+
+class Form1004And1007ExtractionTests(unittest.TestCase):
+    def test_xml_extract_1004_1007_all_sections(self):
+        from api.xml_extractor import extract_fields_from_xml
+        sample_path = r"c:\Victor\Pramaan-3.5-regex-1\2.6\1004+1007\210963 1004-1007.XML"
+        if not os.path.exists(sample_path):
+            self.skipTest("Sample XML file not found.")
+
+        result = extract_fields_from_xml(sample_path, extract_images=False, original_filename="210963 1004-1007.XML")
+        self.assertEqual(result.get("status"), "success")
+        self.assertEqual(result.get("form_type"), "1004 + 1007")
+        self.assertTrue(result.get("has_1007"))
+
+        fields = result.get("fields", {})
+        # Verify 1004 Sections
+        self.assertIn("Subject", fields)
+        self.assertIn("CONTRACT", fields)
+        self.assertIn("NEIGHBORHOOD", fields)
+        self.assertIn("SITE", fields)
+        self.assertIn("IMPROVEMENTS", fields)
+        self.assertIn("SALES_GRID", fields)
+        self.assertIn("INFO_OF_SALES", fields)
+        self.assertIn("RECONCILIATION", fields)
+        self.assertIn("INCOME_APPROACH", fields)
+        self.assertIn("CERTIFICATION", fields)
+
+        # Verify 1007 Rental Sections
+        self.assertIn("COMPARABLE NO. 1", fields)
+        self.assertIn("COMPARABLE NO. 2", fields)
+        self.assertIn("COMPARABLE NO. 3", fields)
+        self.assertIn("RENT_SCHEDULE_RECONCILIATION", fields)
+        self.assertIn("TO BE $", fields)
+        self.assertTrue(bool(fields["TO BE $"]))
+
+
+
+

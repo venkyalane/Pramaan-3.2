@@ -101,6 +101,8 @@ import * as priorSaleHistoryValidation from '../../validations/priorSaleHistoryV
 import * as htmlDataValidation from '../../validations/htmldatavaliadtion';
 import * as infoOfSalesValidation from '../../validations/infoOfSalesValidation';
 import * as version1Validation from './Version1/version1Validation';
+import * as costApproachValidation from '../../validations/costApproachValidation';
+import * as mandatoryValidation from '../../validations/mandatoryValidation';
 import { checkUnpaidLenderStatus } from '../../utils/unpaidLenders';
 
 import PremiumLogo from '../auth/logo';
@@ -149,18 +151,41 @@ const normalizeFullFileData = (raw) => {
     normalized['Sales Grid'] = normalized.SALES_GRID;
   }
 
-  if (!normalized.CONTRACT || typeof normalized.CONTRACT !== 'object') {
-    normalized.CONTRACT = raw.CONTRACT || raw.Contract || raw.contract || {};
-  }
-  if (!normalized.NEIGHBORHOOD || typeof normalized.NEIGHBORHOOD !== 'object') {
-    normalized.NEIGHBORHOOD = raw.NEIGHBORHOOD || raw.Neighborhood || raw.neighborhood || {};
-  }
-  if (!normalized.SITE || typeof normalized.SITE !== 'object') {
-    normalized.SITE = raw.SITE || raw.Site || raw.site || {};
-  }
-  if (!normalized.INFO_OF_SALES || typeof normalized.INFO_OF_SALES !== 'object') {
-    normalized.INFO_OF_SALES = raw.INFO_OF_SALES || raw['Sales Comparison'] || raw.sales_comparison || {};
-  }
+  const sectionsToInit = [
+    ['CONTRACT', ['Contract', 'contract', 'CONTRACT']],
+    ['NEIGHBORHOOD', ['Neighborhood', 'neighborhood', 'NEIGHBORHOOD']],
+    ['SITE', ['Site', 'site', 'SITE']],
+    ['IMPROVEMENTS', ['Improvements', 'improvements', 'IMPROVEMENTS']],
+    ['INFO_OF_SALES', ['Sales Comparison', 'sales_comparison', 'INFO_OF_SALES']],
+    ['RECONCILIATION', ['Reconciliation', 'reconciliation', 'RECONCILIATION']],
+    ['COST_APPROACH', ['Cost Approach', 'cost_approach', 'COST_APPROACH']],
+    ['INCOME_APPROACH', ['Income Approach', 'income_approach', 'INCOME_APPROACH']],
+    ['PUD_INFO', ['PUD Information', 'pud_information', 'PUD_INFO']],
+    ['MARKET_CONDITIONS', ['Market Conditions Addendum', 'market_conditions', 'MARKET_CONDITIONS']],
+    ['CONDO_COOP_PROJECTS', ['Condo / Coop Projects', 'condo_coop_projects', 'CONDO_COOP_PROJECTS']],
+    ['CONDO_FORECLOSURE', ['Condo Foreclosure', 'condo_foreclosure', 'CONDO_FORECLOSURE']],
+    ['CERTIFICATION', ['Certification', 'certification', 'CERTIFICATION']],
+    ['RENT_SCHEDULE_RECONCILIATION', ['Rent Schedule Reconciliation', 'rent_schedule_reconciliation', 'RENT_SCHEDULE_RECONCILIATION']],
+    ['SUBJECT_RENT_SCHEDULE', ['Subject Rent Schedule', 'subject_rent_schedule', 'SUBJECT_RENT_SCHEDULE']],
+    ['COMPARABLE_RENTAL_DATA', ['Comparable Rental Data', 'comparable_rental_data', 'COMPARABLE_RENTAL_DATA', 'Comparable Rents']],
+  ];
+
+  sectionsToInit.forEach(([canonicalKey, aliases]) => {
+    if (!normalized[canonicalKey] || typeof normalized[canonicalKey] !== 'object') {
+      let found = null;
+      for (const alias of aliases) {
+        if (raw[alias] && typeof raw[alias] === 'object') {
+          found = raw[alias];
+          break;
+        }
+        if (raw.clean_data && raw.clean_data[alias] && typeof raw.clean_data[alias] === 'object') {
+          found = raw.clean_data[alias];
+          break;
+        }
+      }
+      normalized[canonicalKey] = found || {};
+    }
+  });
 
   const sectionKeyMap = {
     CONTRACT: [
@@ -195,6 +220,28 @@ const normalizeFullFileData = (raw) => {
       }
     });
   });
+
+  // Unpack rental grid comps into root normalized so data['COMPARABLE NO. 1'] is directly accessible
+  const rentGrid = normalized.COMPARABLE_RENTAL_DATA || raw.clean_data?.['Comparable Rental Data'] || raw.clean_data?.COMPARABLE_RENTAL_DATA;
+  if (rentGrid && typeof rentGrid === 'object') {
+    Object.keys(rentGrid).forEach(rk => {
+      if (typeof rentGrid[rk] === 'object' && rentGrid[rk] !== null) {
+        if (!normalized[rk]) {
+          normalized[rk] = rentGrid[rk];
+        }
+      }
+    });
+  }
+
+  // Unpack Rent Schedule Reconciliation into root normalized
+  const rentRecon = normalized.RENT_SCHEDULE_RECONCILIATION || raw.clean_data?.['Rent Schedule Reconciliation'] || raw.clean_data?.RENT_SCHEDULE_RECONCILIATION;
+  if (rentRecon && typeof rentRecon === 'object') {
+    Object.keys(rentRecon).forEach(rk => {
+      if (normalized[rk] === undefined) {
+        normalized[rk] = rentRecon[rk];
+      }
+    });
+  }
 
   Object.keys(raw).forEach(secKey => {
     if (raw[secKey] && typeof raw[secKey] === 'object' && !Array.isArray(raw[secKey])) {
@@ -286,9 +333,12 @@ const ComparisonDialog = ({ open, onClose, data, onDataChange, pdfFile, htmlFile
 
 };
 
-const detectFormTypeFromXmlString = (xmlString) => {
+const detectFormTypeFromXmlString = (xmlString, fileName = '') => {
   if (!xmlString) return null;
   try {
+    const fn = (fileName || '').toUpperCase();
+    const isExplicit1007File = /\b1004[_\-+ ]*1007\b/i.test(fn) || fn.includes('1004+1007') || fn.includes('1004-1007') || fn.includes('1004_1007');
+
     const reportMatch = xmlString.match(/<REPORT\b([^>]*)/i);
     const reportAttrs = reportMatch ? reportMatch[1] : '';
 
@@ -306,9 +356,18 @@ const detectFormTypeFromXmlString = (xmlString) => {
     }
 
     const combined = (reportAttrs + ' ' + formMatches.join(' ') + ' ' + formIdentifiers.join(' ')).toUpperCase();
-    const has1007 = [...formMatches, ...formIdentifiers].some(f => 
+    
+    // Check XML RESIDENTIAL_RENT_SCHEDULE or rentals with rent amounts
+    const hasRentSched = /<RESIDENTIAL_RENT_SCHEDULE\b|<SINGLE_FAMILY_RENT_SCHEDULE\b/i.test(xmlString);
+    const hasRentAmount = /MonthlyRentAmount="[1-9]|MarketAdjustedMonthlyRentAmount="[1-9]/i.test(xmlString);
+    const hasXmlRentals = hasRentSched && hasRentAmount;
+
+    // Check FORM addenda or report attributes
+    const has1007Form = [...formMatches, ...formIdentifiers].some(f => 
       /\b(?:1007|FNM\s*1007|FRE\s*1000|SRX)\b|SINGLE\s*FAMILY\s*(?:COMPARABLE\s*)?RENT/i.test(f)
-    );
+    ) || /\b(?:1007|FNM\s*1007|FRE\s*1000)\b/i.test(reportAttrs);
+
+    const has1007 = isExplicit1007File || hasXmlRentals || has1007Form;
 
     if (combined.includes('1025') || combined.includes('SMALL RESIDENTIAL') || combined.includes('2-4 UNIT') || combined.includes('FRE72')) {
       return '1025';
@@ -352,7 +411,7 @@ const detectFormTypeFromXmlString = (xmlString) => {
     if (combined.includes('1004MC')) {
       return '1004MC';
     }
-    return '1004';
+    return has1007 ? '1004 + 1007' : '1004';
   } catch (e) {
     console.error('Error detecting XML form type:', e);
     return null;
@@ -501,6 +560,8 @@ const getCleanDisplayJson = (data) => {
     ['CONDO_FORECLOSURE', 'Condo Foreclosure'],
     ['SUBJECT_RENT_SCHEDULE', 'Subject Rent Schedule'],
     ['COMPARABLE_RENTAL_DATA', 'Comparable Rental Data'],
+    ['RENT_SCHEDULE_RECONCILIATION', 'Rent Schedule Reconciliation'],
+    ['RENT_SCHEDULE_GRID', 'Rent Schedule Grid'],
     ['CERTIFICATION', 'Certification'],
   ];
   sectionPairs.forEach(([secKey, label]) => {
@@ -724,6 +785,9 @@ function Subject({ defaultFormType }) {
   const [isonewithAccessoryUnitRevisionLangDialogOpen, setOneWithAccessoryUnitRevisionLangDialogOpen] = useState(false);
   const [isLenderClientAddressRevisionLangDialogOpen, setLenderClientAddressRevisionLangDialogOpen] = useState(false);
   const [is1007RevisionLangDialogOpen, set1007RevisionLangDialogOpen] = useState(false);
+  const [isMandatoryErrorDialogOpen, setIsMandatoryErrorDialogOpen] = useState(false);
+  const [mandatoryErrors, setMandatoryErrors] = useState([]);
+  const [mandatoryActionType, setMandatoryActionType] = useState('submission');
 
   const [isClearDialogOpen, setIsClearDialogOpen] = useState(false);
   const [isHtmlDataMinimized, setIsHtmlDataMinimized] = useState(false);
@@ -1099,8 +1163,16 @@ function Subject({ defaultFormType }) {
       registry[field] = [projectSiteValidation.checkProjectSiteFieldsNotBlank];
     });
 
+    costApproachFields.forEach(field => {
+      if (!registry[field]) registry[field] = [];
+      registry[field].push(costApproachValidation.checkCostApproachFieldsNotBlank);
+    });
+
     incomeApproachFields.forEach(field => {
-      const validators = [incomeApproachValidation.checkIncomeApproachFieldsNotBlank];
+      const validators = [
+        (f, text, allData, path, saleName) =>
+          incomeApproachValidation.checkIncomeApproachFieldsNotBlank(f, text, allData, path, saleName, selectedFormType)
+      ];
       if (incomeApproachValidation.INCOME_APPROACH_1007_REQUIRED_FIELDS.includes(field)) {
         validators.push((f, text, allData, path, saleName) =>
           incomeApproachValidation.checkIncomeApproach1007Required(f, text, allData, path, saleName, selectedFormType)
@@ -1536,8 +1608,9 @@ function Subject({ defaultFormType }) {
       ].includes(lookupField);
 
       const isOtherLandUseSpecialCheck = lookupField === 'Present Land Use for other';
+      const isMandatoryCheck = mandatoryValidation.isMandatoryField(lookupField, allData, activeFormTypeStr, path);
 
-      if (isFieldValBlank(value) && !isPudSpecialCheck && !isContractSpecialCheck && !is1007SpecialCheck && !isComparativeCheck && !isFiveValCheck && !isVersion1UtilitySubField && !isVersion1RequiredCheck && !isOtherLandUseSpecialCheck) {
+      if (isFieldValBlank(value) && !isMandatoryCheck && !isPudSpecialCheck && !isContractSpecialCheck && !is1007SpecialCheck && !isComparativeCheck && !isFiveValCheck && !isVersion1UtilitySubField && !isVersion1RequiredCheck && !isOtherLandUseSpecialCheck) {
         return;
       }
 
@@ -1559,7 +1632,7 @@ function Subject({ defaultFormType }) {
           }
 
           if (result && result.isError) {
-            const isMsgBlank = !result.skipBlankFilter && result.message && (
+            const isMsgBlank = !result.skipBlankFilter && !isMandatoryCheck && result.message && (
               result.message.toLowerCase().includes('blank') ||
               result.message.toLowerCase().includes('empty')
             );
@@ -1663,6 +1736,23 @@ function Subject({ defaultFormType }) {
           errors.push(['Summary', 'Effective Date of Appraisal', effDatesRes.message, ['SUMMARY', 'Effective Date of Appraisal']]);
         }
       } catch (e) { }
+    }
+
+    try {
+      const mandatoryResult = mandatoryValidation.validateAllMandatoryFields(allData, activeFormTypeStr);
+      if (!mandatoryResult.isValid) {
+        mandatoryResult.errors.forEach(err => {
+          const properSection = err.section;
+          const formattedFieldName = err.label;
+          const errKey = `${properSection.toLowerCase()}|${formattedFieldName.toLowerCase()}|${err.message.toLowerCase()}`;
+          if (!seenErrorKeys.has(errKey)) {
+            seenErrorKeys.add(errKey);
+            errors.push([properSection, formattedFieldName, err.message, err.path]);
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Error during mandatory fields validation in getValidationErrors:', e);
     }
 
     const uniqueErrors = [];
@@ -2259,7 +2349,6 @@ function Subject({ defaultFormType }) {
   const topCheckFields = [
     'FHA Case #',
     'ADU File Check',
-    '1004MC Addendum',
     'ANSI',
     'Exposure Comment',
     'Prior Service Comment',
@@ -2303,16 +2392,6 @@ function Subject({ defaultFormType }) {
 
   const currentState = data?.State?.toUpperCase();
   const hasAppraiserFee = !!(data?.["Appraiser's Fee"] || data?.["Appraiser Fee"] || data?.Subject?.["Appraiser's Fee"] || data?.Subject?.["Appraiser Fee"] || data?.CERTIFICATION?.["Appraiser's Fee"] || data?.CERTIFICATION?.["Appraiser Fee"]);
-  const has1004mc = !!(data?.has_1004mc || data?.['1004MC Addendum'] === 'Present' || data?.['1004MC Present'] === 'Yes' || data?.Subject?.['1004MC Addendum'] === 'Present' || data?.Subject?.['1004MC Present'] === 'Yes');
-
-  if (has1004mc && !subjectFields.includes("1004MC Addendum")) {
-    const reportDataSrcIdx = subjectFields.indexOf('Report data source(s) used, offering price(s), and date(s)');
-    if (reportDataSrcIdx !== -1) {
-      subjectFields.splice(reportDataSrcIdx + 1, 0, "1004MC Addendum");
-    } else {
-      subjectFields.push("1004MC Addendum");
-    }
-  }
 
   if (currentState || hasAppraiserFee) {
     if ((currentState && statesRequiringAppraiserFee.includes(currentState)) || hasAppraiserFee) {
@@ -3061,6 +3140,19 @@ function Subject({ defaultFormType }) {
       return;
     }
 
+    const mandatoryCheck = mandatoryValidation.validateAllMandatoryFields(data, selectedFormType);
+    if (!mandatoryCheck.isValid) {
+      setMandatoryErrors(mandatoryCheck.errors);
+      setMandatoryActionType('JSON export');
+      setIsMandatoryErrorDialogOpen(true);
+      setNotification({
+        open: true,
+        message: `JSON export blocked: ${mandatoryCheck.missingCount} mandatory field${mandatoryCheck.missingCount > 1 ? 's are' : ' is'} blank or incomplete.`,
+        severity: 'error'
+      });
+      return;
+    }
+
     const errors = typeof getValidationErrors === 'function' ? getValidationErrors() : [];
     const successes = typeof getValidationSuccesses === 'function' ? getValidationSuccesses() : [];
 
@@ -3355,7 +3447,7 @@ function Subject({ defaultFormType }) {
           const reader = new FileReader();
           reader.onload = (event) => {
             const text = event.target?.result;
-            const detected = detectFormTypeFromXmlString(text);
+            const detected = detectFormTypeFromXmlString(text, file.name);
             if (detected) {
               setSelectedFormType(detected);
               setXmlDetectedFormType(detected);
@@ -3398,7 +3490,7 @@ function Subject({ defaultFormType }) {
         const reader = new FileReader();
         reader.onload = (event) => {
           const text = event.target?.result;
-          const detected = detectFormTypeFromXmlString(text);
+          const detected = detectFormTypeFromXmlString(text, file.name);
           if (detected) {
             setSelectedFormType(detected);
             setXmlDetectedFormType(detected);
@@ -3635,9 +3727,39 @@ function Subject({ defaultFormType }) {
       });
     }
 
-    if (result.extracted_photos && Array.isArray(result.extracted_photos)) {
-      normalizedFields["EXTRACTED_PHOTOS"] = result.extracted_photos;
-      normalizedFields["extracted_photos"] = result.extracted_photos;
+    // Unpack COMPARABLE_RENTAL_DATA comps (keep Subject section and Rental Grid distinct)
+    const rentGrid = result.fields?.COMPARABLE_RENTAL_DATA || result.clean_data?.['Comparable Rental Data'] || result.clean_data?.COMPARABLE_RENTAL_DATA || result.COMPARABLE_RENTAL_DATA;
+    if (rentGrid && typeof rentGrid === 'object') {
+      normalizedFields["COMPARABLE_RENTAL_DATA"] = rentGrid;
+      Object.keys(rentGrid).forEach(rentKey => {
+        if (typeof rentGrid[rentKey] === 'object' && rentGrid[rentKey] !== null) {
+          if (!rentKey.toLowerCase().includes('subject')) {
+            normalizedFields[rentKey] = rentGrid[rentKey];
+            const m = rentKey.match(/#?\s*(\d+)/);
+            if (m) {
+              const num = m[1];
+              normalizedFields[`COMPARABLE NO. ${num}`] = rentGrid[rentKey];
+              normalizedFields[`COMPARABLE NO ${num}`] = rentGrid[rentKey];
+              normalizedFields[`Rental ${num}`] = rentGrid[rentKey];
+              normalizedFields[`Rental #${num}`] = rentGrid[rentKey];
+              normalizedFields[`COMPARABLE Rental No #${num}`] = rentGrid[rentKey];
+            }
+          }
+        }
+      });
+    }
+
+    // Unpack RENT_SCHEDULE_RECONCILIATION
+    const rentRecon = result.fields?.RENT_SCHEDULE_RECONCILIATION || result.clean_data?.['Rent Schedule Reconciliation'] || result.clean_data?.RENT_SCHEDULE_RECONCILIATION;
+    if (rentRecon && typeof rentRecon === 'object') {
+      normalizedFields["RENT_SCHEDULE_RECONCILIATION"] = rentRecon;
+      Object.assign(normalizedFields, rentRecon);
+    }
+
+    const photosFromApi = result.extracted_photos || result.EXTRACTED_PHOTOS || result.clean_data?.EXTRACTED_PHOTOS || result.clean_data?.extracted_photos || result.fields?.EXTRACTED_PHOTOS || result.fields?.extracted_photos;
+    if (photosFromApi && Array.isArray(photosFromApi)) {
+      normalizedFields["EXTRACTED_PHOTOS"] = photosFromApi;
+      normalizedFields["extracted_photos"] = photosFromApi;
     }
     if (result.mathematical_verification) {
       normalizedFields["MATHEMATICAL_VERIFICATION"] = result.mathematical_verification;
@@ -3785,7 +3907,13 @@ function Subject({ defaultFormType }) {
         extractedDataResult = result;
         if (result.form_type) {
           const norm = normalizeExtractedFormType(result.form_type);
-          if (norm) detectedFormType = norm;
+          if (norm) {
+            detectedFormType = norm;
+            setSelectedFormType(norm);
+            if (currentSource === 'xml') {
+              setXmlDetectedFormType(norm);
+            }
+          }
         }
         processExtractionResult(result, Date.now(), category, currentSource);
       } catch (error) {
@@ -4317,6 +4445,19 @@ function Subject({ defaultFormType }) {
       return;
     }
 
+    const mandatoryCheck = mandatoryValidation.validateAllMandatoryFields(data, selectedFormType);
+    if (!mandatoryCheck.isValid) {
+      setMandatoryErrors(mandatoryCheck.errors);
+      setMandatoryActionType('PDF generation');
+      setIsMandatoryErrorDialogOpen(true);
+      setNotification({
+        open: true,
+        message: `PDF generation blocked: ${mandatoryCheck.missingCount} mandatory field${mandatoryCheck.missingCount > 1 ? 's are' : ' is'} blank or incomplete.`,
+        severity: 'error'
+      });
+      return;
+    }
+
     setIsGeneratingPdf(true);
     setTimeout(() => {
       try {
@@ -4580,6 +4721,20 @@ function Subject({ defaultFormType }) {
       setNotification({ open: true, message: 'No data to save.', severity: 'warning' });
       return;
     }
+
+    const mandatoryCheck = mandatoryValidation.validateAllMandatoryFields(data, selectedFormType);
+    if (!mandatoryCheck.isValid) {
+      setMandatoryErrors(mandatoryCheck.errors);
+      setMandatoryActionType('submission');
+      setIsMandatoryErrorDialogOpen(true);
+      setNotification({
+        open: true,
+        message: `Submission blocked: ${mandatoryCheck.missingCount} mandatory field${mandatoryCheck.missingCount > 1 ? 's are' : ' is'} blank or incomplete.`,
+        severity: 'error'
+      });
+      return;
+    }
+
     setLoading(true);
     setNotification({ open: true, message: 'Saving data to database...', severity: 'info' });
 
@@ -4673,7 +4828,12 @@ function Subject({ defaultFormType }) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: 'An unknown error occurred while saving.' }));
-        throw new Error(errorData.detail || 'Failed to save data.');
+        if (errorData.missing_fields && Array.isArray(errorData.missing_fields)) {
+          setMandatoryErrors(errorData.missing_fields);
+          setMandatoryActionType('submission');
+          setIsMandatoryErrorDialogOpen(true);
+        }
+        throw new Error(errorData.detail || errorData.error || 'Failed to save data.');
       }
 
       const result = await response.json();
@@ -6382,8 +6542,8 @@ function Subject({ defaultFormType }) {
                             label="Form Type"
                             helperText={
                               xmlDetectedFormType && extractionSource === 'xml'
-                                ? `Present in XML: Form ${xmlDetectedFormType}${!String(xmlDetectedFormType).includes('1004MC') && (data?.has_1004mc || data?.['1004MC Addendum'] === 'Present' || data?.['1004MC Present'] === 'Yes' || data?.Subject?.['1004MC Addendum'] === 'Present') ? ' + 1004MC Addendum' : ''}`
-                                : (data?.has_1004mc || data?.['1004MC Addendum']?.startsWith('Present') || data?.['1004MC Present'] === 'Yes' ? '1004MC Addendum Present in Report' : undefined)
+                                ? `Present in XML: Form ${xmlDetectedFormType}`
+                                : undefined
                             }
                             FormHelperTextProps={{
                               sx: { color: 'success.main', fontWeight: 600, mx: 0.5, mt: 0.5 }
@@ -6408,17 +6568,40 @@ function Subject({ defaultFormType }) {
                     }}
                   >
                     <Stack spacing={1.5} width="100%">
-                      <Typography
-                        variant="subtitle1"
-                        fontWeight={700}
-                        display={{ xs: 'none', md: 'flex' }}
-                        alignItems="center"
-                        gap={1}
-                        mt={10}
-                      >
-                        <AssessmentIcon fontSize="small" color="primary" />
-                        Actions
-                      </Typography>
+                      <Box display="flex" alignItems="center" justifyContent="space-between" mt={10}>
+                        <Typography
+                          variant="subtitle1"
+                          fontWeight={700}
+                          display={{ xs: 'none', md: 'flex' }}
+                          alignItems="center"
+                          gap={1}
+                        >
+                          <AssessmentIcon fontSize="small" color="primary" />
+                          Actions
+                        </Typography>
+                        {data && Object.keys(data).length > 0 && (() => {
+                          const mandCheck = mandatoryValidation.validateAllMandatoryFields(data, selectedFormType);
+                          if (!mandCheck.isValid) {
+                            return (
+                              <Tooltip title="Click to view blank mandatory fields">
+                                <Chip
+                                  icon={<WarningIcon style={{ color: '#fff' }} fontSize="small" />}
+                                  label={`${mandCheck.missingCount} Blank Required`}
+                                  color="error"
+                                  size="small"
+                                  onClick={() => {
+                                    setMandatoryErrors(mandCheck.errors);
+                                    setMandatoryActionType('submission or export');
+                                    setIsMandatoryErrorDialogOpen(true);
+                                  }}
+                                  sx={{ cursor: 'pointer', fontWeight: 'bold' }}
+                                />
+                              </Tooltip>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </Box>
 
                       <Box
                         sx={{
@@ -6765,50 +6948,6 @@ function Subject({ defaultFormType }) {
                             <Tooltip title="Check ADU Requirements">
                               <IconButton onClick={handleADUCheck} size="small" color="info">
                                 <Info fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          </Paper>
-                        </Grid>
-                      )}
-
-                      {(data['1004MC Addendum'] || data['1004MC Present'] || data?.Subject?.['1004MC Addendum'] || data?.has_1004mc !== undefined) && (
-                        <Grid item xs={12} sm={6} md={4}>
-                          <Paper
-                            variant="outlined"
-                            sx={{
-                              p: 1.5,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              height: '100%',
-                              borderColor: (data?.has_1004mc || data['1004MC Addendum']?.startsWith('Present') || data['1004MC Present'] === 'Yes' || data?.Subject?.['1004MC Addendum']?.startsWith('Present')) ? 'success.main' : 'divider',
-                              bgcolor: (data?.has_1004mc || data['1004MC Addendum']?.startsWith('Present') || data['1004MC Present'] === 'Yes' || data?.Subject?.['1004MC Addendum']?.startsWith('Present')) ? '#f0fdf4' : 'background.paper'
-                            }}
-                          >
-                            <Box sx={{ overflow: 'hidden' }}>
-                              <Typography variant="caption" color="secondary.main" fontWeight="bold" display="block" noWrap>
-                                1004MC Addendum
-                              </Typography>
-                              <EditableField
-                                fieldPath={['1004MC Addendum']}
-                                value={data['1004MC Addendum'] || (data?.has_1004mc ? 'Present' : 'Not Present')}
-                                onDataChange={handleDataChange}
-                                editingField={editingField}
-                                setEditingField={setEditingField}
-                                isEditable={isEditable}
-                                allData={data}
-                              />
-                            </Box>
-                            <Tooltip title="View Market Conditions Section">
-                              <IconButton
-                                onClick={() => {
-                                  const el = document.getElementById('market-conditions-section') || document.getElementById('market-conditions-summary');
-                                  if (el) el.scrollIntoView({ behavior: 'smooth' });
-                                }}
-                                size="small"
-                                color="primary"
-                              >
-                                <TrendingUpIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
                           </Paper>
@@ -7237,6 +7376,84 @@ function Subject({ defaultFormType }) {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setIsRentFormTypeMismatchDialogOpen(false)} variant="contained">Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={isMandatoryErrorDialogOpen}
+        onClose={() => setIsMandatoryErrorDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 2,
+            borderTop: '5px solid #d32f2f'
+          }
+        }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <WarningIcon sx={{ color: '#d32f2f', fontSize: 28 }} />
+            <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#d32f2f' }}>
+              Mandatory Fields Required ({mandatoryErrors.length})
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={() => setIsMandatoryErrorDialogOpen(false)}>
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers sx={{ py: 2 }}>
+          <Alert severity="error" sx={{ mb: 2, fontWeight: 500 }}>
+            {`The report cannot proceed with ${mandatoryActionType} because critical mandatory fields are missing or blank. Please complete the following required fields before proceeding:`}
+          </Alert>
+
+          {(() => {
+            const grouped = {};
+            mandatoryErrors.forEach(err => {
+              const sec = err.section || 'General Details';
+              if (!grouped[sec]) grouped[sec] = [];
+              grouped[sec].push(err);
+            });
+
+            return Object.entries(grouped).map(([sectionName, errList]) => (
+              <Box key={sectionName} sx={{ mb: 2.5 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 'bold', color: '#1f2937', mb: 1, textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', pb: 0.5 }}>
+                  {sectionName}
+                </Typography>
+                <Stack spacing={1}>
+                  {errList.map((err, idx) => (
+                    <Box
+                      key={idx}
+                      sx={{
+                        p: 1.25,
+                        backgroundColor: '#fff1f2',
+                        borderLeft: '4px solid #e11d48',
+                        borderRadius: 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 0.5
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600, color: '#9f1239' }}>
+                          {err.label || err.field}
+                        </Typography>
+                        <Chip label="Required" size="small" sx={{ height: 18, fontSize: '0.65rem', backgroundColor: '#e11d48', color: '#fff', fontWeight: 'bold' }} />
+                      </Box>
+                      <Typography variant="caption" sx={{ color: '#881337', fontSize: '0.8rem' }}>
+                        {err.message}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Stack>
+              </Box>
+            ));
+          })()}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 1.5 }}>
+          <Button onClick={() => setIsMandatoryErrorDialogOpen(false)} variant="contained" color="error">
+            Review & Fix Fields
+          </Button>
         </DialogActions>
       </Dialog>
       <RevisionLanguageDialog
